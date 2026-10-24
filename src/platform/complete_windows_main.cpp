@@ -75,6 +75,26 @@ namespace
             if (!window_)
                 return false;
 
+            // Match the Platform host's logical catalog size without depending
+            // on Platform: this native host retains ownership of its HWND.
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            RECT outer{}, client{};
+            if (GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)
+                && GetWindowRect(window_, &outer) && GetClientRect(window_, &client))
+            {
+                const int chrome_width = (outer.right - outer.left) - (client.right - client.left);
+                const int chrome_height = (outer.bottom - outer.top) - (client.bottom - client.top);
+                const auto preferred = epochgui_demo::win32::preferred_canvas_client_size(
+                    GetDpiForWindow(window_), monitor.rcWork.right - monitor.rcWork.left,
+                    monitor.rcWork.bottom - monitor.rcWork.top, chrome_width, chrome_height);
+                const int outer_width = preferred.cx + chrome_width;
+                const int outer_height = preferred.cy + chrome_height;
+                if (!SetWindowPos(window_, nullptr,
+                        monitor.rcWork.left + (monitor.rcWork.right - monitor.rcWork.left - outer_width) / 2,
+                        monitor.rcWork.top + (monitor.rcWork.bottom - monitor.rcWork.top - outer_height) / 2,
+                        outer_width, outer_height, SWP_NOZORDER | SWP_NOACTIVATE))
+                    return false;
+            }
             apply_dwm_frame();
             device_context_ = GetDC(window_);
             if (!device_context_ || !create_opengl_context())
