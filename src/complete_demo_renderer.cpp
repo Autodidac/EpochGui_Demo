@@ -1194,6 +1194,7 @@ void main()
             case 2: update_text_page(frame); break;
             case 3: update_image_page(frame); break;
             case 4: break;
+            case 5: break; // Libraries updates its controls while building the page.
             default: page = 0; break;
             }
 
