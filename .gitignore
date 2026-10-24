@@ -4,3 +4,7 @@ out/
 CMakeUserPresets.json
 *.svg
 *.zip
+
+/.ci-tools/
+/source-audit.json
+/dependencies/

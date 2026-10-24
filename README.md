@@ -2,7 +2,48 @@
 
 A cross-platform C++23 interactive catalog for [`Autodidac/EpochGui`](https://github.com/Autodidac/EpochGui).
 
-The demo exercises every subsystem currently exported by the core `epoch.gui` module, together with the optional rounded-rectangle and fallback-input modules. The controls are live: windows drag and resize, text fields accept input, menus react to right-click, panes dock and pop out, and the native host frame can be toggled while the custom EpochGui title bar stays visible.
+The demo exercises selected subsystems exported by the core `epoch.gui` module, together with the optional rounded-rectangle and fallback-input modules. The controls are live: windows drag and resize, text fields accept input, menus react to right-click, panes dock and pop out, and the native host frame can be toggled while the custom EpochGui title bar stays visible.
+
+## Selectable library examples
+
+`EPOCHGUI_DEMO_COMPOSITION` selects the compiled graph and Libraries page:
+
+| Value | Public libraries | Example |
+| --- | --- | --- |
+| `gui` (default) | Gui | Controls and progress geometry |
+| `media` | Gui, Media | Admitted metadata, playhead and aspect-fit geometry |
+| `audio` | Gui, Audio | Deterministic PCM mixing and measured samples |
+| `platform` | Gui, Platform | Canonical native runtime policy |
+| `full` | All four | Combined metadata, mixer and GUI presentation |
+
+The step control advances half a second. Media does not decode video; Audio
+mixes into memory without opening a sound device. Each graph has the compiled
+`epoch_gui_demo_libraries_contract` CTest consumer.
+
+`EPOCHGUI_DEMO_HOST=native` keeps the existing Win32, GLX or Cocoa host.
+On Windows, `EPOCHGUI_DEMO_HOST=platform` additionally selects Platform ownership
+of the window, lifecycle, event pump and application entrypoint. Demo owns WGL
+and rendering on the Platform caller thread. This host keeps the native frame
+and disables frame toggling. Linux/macOS Platform GL adapters remain pending.
+
+Configure separate directories for each example:
+
+```sh
+cmake -S . -B build/gui -DEPOCHGUI_DEMO_COMPOSITION=gui
+cmake -S . -B build/media -DEPOCHGUI_DEMO_COMPOSITION=media
+cmake -S . -B build/audio -DEPOCHGUI_DEMO_COMPOSITION=audio
+cmake -S . -B build/platform -DEPOCHGUI_DEMO_COMPOSITION=platform -DEPOCHGUI_DEMO_HOST=platform
+cmake -S . -B build/full -DEPOCHGUI_DEMO_COMPOSITION=full -DEPOCHGUI_DEMO_HOST=platform
+cmake --build build/full --config Release
+ctest --test-dir build/full -C Release --output-on-failure
+```
+
+Choose a module-capable Visual Studio or Ninja generator. `EPOCHGUI_ROOT` and
+the selected `EPOCH_PLATFORM_ROOT`, `EPOCH_AUDIO_ROOT`, `EPOCH_MEDIA_ROOT` accept
+explicit local checkouts; sibling public repositories are defaults. No network
+fetch or Engine fallback is used. Enable `BUILD_TESTING` for CPU contracts and
+`EPOCHGUI_DEMO_LIBRARY_PAGE` to start on the composition page. Build success
+alone does not establish interactive runtime acceptance.
 
 ## Live pages
 
@@ -245,3 +286,20 @@ EpochGui_Demo-v<version>-linux-x64/
 ```
 
 The Windows workflow creates the release first. After it succeeds, the Linux workflow builds the same commit and attaches the Linux archive and checksum to that release.
+
+For Media source distributions, `EPOCHGUI_DEMO_LIBRARY_PAGE=ON` opens the
+Libraries page and `EPOCHGUI_DEMO_APP_NAME=EpochMediaDemo` names the shared host.
+No renderer or window/event implementation is copied into Media. Standalone
+Audio remains independent; the selected demonstration graph controls its dependencies.
+
+Current source version is 0.6.0; historical release 0.5.3 remains unchanged.
+Native runtime acceptance remains pending. Release workflows still
+remain manually gated pending hosted checks and native acceptance.
+
+## License
+
+First-party source is MIT, including the owner-authorized migrated GUI code.
+Third-party notices remain applicable. Historical releases retain their licenses.
+
+Reviewed EpochGui source dependency: `f83b2f15385598b8efbb028a6f391ca637e07634` (0.90.0).
+Platform: `c1b20ea9bf80fb213b5499a8857a9a0066db5ccd` (0.2.0); Audio: `89d151605830883e0d00723fa478b348e742e638` (0.1.0); Media: `4dbb222aab13624cf53d699453e00e4db26cb8d9` (0.1.0). These are exact source pins; Platform hosted Windows/Linux Debug/Release checks passed; Demo hosted checks and native acceptance remain pending, so this is not a release-ready graph.

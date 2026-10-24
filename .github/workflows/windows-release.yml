@@ -1,25 +1,13 @@
 name: EpochGui Demo Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - CMakeLists.txt
-      - CMakePresets.json
-      - VERSION
-      - README.md
-      - assets/**
-      - include/**
-      - modules/**
-      - src/**
-      - build_msvc.ps1
-      - generate_msvc.ps1
-      - open_msvc.ps1
-      - build_linux.sh
-      - .github/workflows/windows-release.yml
-      - .github/workflows/linux-release.yml
   workflow_dispatch:
+    inputs:
+      release_authorized:
+        description: Publish a new accepted tag after source and runtime approval
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: write
@@ -31,6 +19,7 @@ concurrency:
 
 jobs:
   windows:
+    if: inputs.release_authorized && startsWith(github.ref, 'refs/tags/v')
     name: Windows x64 MSVC
     runs-on: windows-2022
 
@@ -38,11 +27,15 @@ jobs:
       - name: Check out EpochGui demo
         uses: actions/checkout@v4
 
+      - name: Require accepted release graph
+        shell: bash
+        run: python -c "import json; assert json.load(open('dependencies.json'))['release_ready'] is True, 'Release graph has not been accepted'"
+
       - name: Check out EpochGui
         uses: actions/checkout@v4
         with:
           repository: Autodidac/EpochGui
-          ref: main
+          ref: f83b2f15385598b8efbb028a6f391ca637e07634
           path: EpochGui
 
       - name: Configure
@@ -145,7 +138,7 @@ jobs:
           New-Item -ItemType Directory -Path $stageAssets -Force | Out-Null
 
           Copy-Item $source (Join-Path $stage 'EpochGuiDemo.exe')
-          Copy-Item README.md $stage
+          Copy-Item README.md, LICENSE $stage
           Copy-Item $asset (Join-Path $stageAssets 'epochgui_demo.ppm')
 
           @(
@@ -214,13 +207,7 @@ jobs:
 
           gh release view $env:RELEASE_TAG *> $null
           if ($LASTEXITCODE -eq 0) {
-              gh release upload $env:RELEASE_TAG $env:RELEASE_ZIP $env:RELEASE_CHECKSUM --clobber
-              if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
-              gh release edit $env:RELEASE_TAG `
-                  --target $env:GITHUB_SHA `
-                  --title "EpochGui Demo $env:RELEASE_TAG" `
-                  --notes $notes
-              if ($LASTEXITCODE -ne 0) { throw 'Release metadata update failed' }
+              throw 'Existing historical release is immutable; choose a new accepted version.'
           }
           else {
               gh release create $env:RELEASE_TAG `

@@ -1,0 +1,76 @@
+name: Source composition contracts
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        composition: [gui, media, audio, platform, full]
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve exact dependency revisions
+        id: pins
+        run: python .github/dependency_pins.py ${{ matrix.composition }}
+      - uses: actions/checkout@v4
+        with:
+          repository: Autodidac/EpochGui
+          ref: ${{ steps.pins.outputs.gui }}
+          path: dependencies/EpochGui
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.composition == 'platform' || matrix.composition == 'full'
+        with:
+          repository: Autodidac/EpochPlatformEngine
+          ref: ${{ steps.pins.outputs.platform }}
+          path: dependencies/EpochPlatformEngine
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.composition == 'audio' || matrix.composition == 'full'
+        with:
+          repository: Autodidac/EpochAudioEngine
+          ref: ${{ steps.pins.outputs.audio }}
+          path: dependencies/EpochAudioEngine
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: matrix.composition == 'media' || matrix.composition == 'full'
+        with:
+          repository: Autodidac/EpochMediaEngine
+          ref: ${{ steps.pins.outputs.media }}
+          path: dependencies/EpochMediaEngine
+          persist-credentials: false
+      - name: Install pinned CMake
+        run: |
+          python -m venv .ci-tools
+          .ci-tools/Scripts/python -m pip install cmake==4.4.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Configure selected graph
+        shell: pwsh
+        run: |
+          $hostKind = if ('${{ matrix.composition }}' -in @('platform','full')) { 'platform' } else { 'native' }
+          .ci-tools/Scripts/cmake -S . -B out -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DEPOCHGUI_DEMO_COMPOSITION=${{ matrix.composition }} -DEPOCHGUI_DEMO_HOST=$hostKind -DEPOCHGUI_ROOT="$pwd/dependencies/EpochGui" -DEPOCH_PLATFORM_ROOT="$pwd/dependencies/EpochPlatformEngine" -DEPOCH_AUDIO_ROOT="$pwd/dependencies/EpochAudioEngine" -DEPOCH_MEDIA_ROOT="$pwd/dependencies/EpochMediaEngine" -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build application and consumer
+        run: .ci-tools/Scripts/cmake --build out --config ${{ matrix.configuration }} --parallel 2
+      - name: CPU contracts
+        run: .ci-tools/Scripts/ctest --test-dir out -C ${{ matrix.configuration }} --output-on-failure
+      - name: Source and license receipt
+        run: python .github/audit_source.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.composition }}-${{ matrix.configuration }}-source-evidence
+          path: |
+            source-audit.json
+            dependencies.json
+            out/Testing/Temporary/LastTest.log
+          if-no-files-found: warn

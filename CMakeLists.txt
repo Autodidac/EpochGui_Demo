@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(EpochGuiDemo LANGUAGES CXX)
+project(EpochGuiDemo VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,10 +54,81 @@ set(EPOCHGUI_ENABLE_INPUT ON CACHE BOOL
 message(STATUS "EpochGui root: ${EPOCHGUI_ROOT}")
 message(STATUS "EpochGui fallback input: enabled for demo")
 
-add_subdirectory(
-    "${EPOCHGUI_ROOT}"
-    "${CMAKE_CURRENT_BINARY_DIR}/EpochGui"
-)
+set(EPOCHGUI_DEMO_COMPOSITION "gui" CACHE STRING "gui, media, audio, platform, or full")
+set_property(CACHE EPOCHGUI_DEMO_COMPOSITION PROPERTY STRINGS gui media audio platform full)
+if(NOT EPOCHGUI_DEMO_COMPOSITION MATCHES "^(gui|media|audio|platform|full)$")
+    message(FATAL_ERROR "Unknown EPOCHGUI_DEMO_COMPOSITION")
+endif()
+set(EPOCHGUI_DEMO_HOST "native" CACHE STRING "native or platform (Win32 currently)")
+set_property(CACHE EPOCHGUI_DEMO_HOST PROPERTY STRINGS native platform)
+if(NOT EPOCHGUI_DEMO_HOST MATCHES "^(native|platform)$")
+    message(FATAL_ERROR "Unknown EPOCHGUI_DEMO_HOST")
+endif()
+if(EPOCHGUI_DEMO_HOST STREQUAL "platform" AND NOT WIN32)
+    message(FATAL_ERROR "Platform-owned Demo GL adapter is currently Win32 only; native host remains available")
+endif()
+set(_demo_owners)
+foreach(_owner IN ITEMS Platform Audio Media)
+    string(TOLOWER "${_owner}" _owner_lower)
+    string(TOUPPER "${_owner}" _owner_upper)
+    set(EPOCH_DEMO_${_owner_upper} 0)
+    if(EPOCHGUI_DEMO_COMPOSITION STREQUAL "full" OR EPOCHGUI_DEMO_COMPOSITION STREQUAL "${_owner_lower}" OR (_owner STREQUAL "Platform" AND EPOCHGUI_DEMO_HOST STREQUAL "platform"))
+        list(APPEND _demo_owners ${_owner})
+        set(EPOCH_DEMO_${_owner_upper} 1)
+    endif()
+endforeach()
+
+# Dependencies are explicit local source roots; no network fetch or Engine fallback.
+set(_demo_parent_build_testing "${BUILD_TESTING}")
+set(BUILD_TESTING OFF)
+if(NOT TARGET EpochGui)
+    add_subdirectory("${EPOCHGUI_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/EpochGui")
+endif()
+foreach(_owner IN LISTS _demo_owners)
+    string(TOUPPER "${_owner}" _owner_upper)
+    set(EPOCH_${_owner_upper}_ROOT "" CACHE PATH "Path to standalone Epoch${_owner}Engine")
+    if(NOT EPOCH_${_owner_upper}_ROOT)
+        set(EPOCH_${_owner_upper}_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../Epoch${_owner}Engine")
+    endif()
+    if(NOT EXISTS "${EPOCH_${_owner_upper}_ROOT}/CMakeLists.txt")
+        message(FATAL_ERROR "Set EPOCH_${_owner_upper}_ROOT to a built-source Epoch${_owner}Engine checkout")
+    endif()
+    if(_owner STREQUAL "Platform")
+        set(EPOCH_PLATFORM_BUILD_STATIC ON)
+        set(EPOCH_PLATFORM_BUILD_SHARED OFF)
+        set(EPOCH_PLATFORM_BUILD_MODULES ON)
+        set(EPOCH_PLATFORM_BUILD_EXAMPLES OFF)
+        set(EPOCH_PLATFORM_BUILD_TESTS OFF)
+    endif()
+    if(NOT TARGET Epoch::${_owner}Engine AND NOT (_owner STREQUAL "Platform" AND TARGET EpochPlatformEngine::ModuleStatic))
+        add_subdirectory("${EPOCH_${_owner_upper}_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/Epoch${_owner}Engine")
+    endif()
+endforeach()
+set(BUILD_TESTING "${_demo_parent_build_testing}")
+add_library(epoch_gui_demo_models STATIC)
+target_sources(epoch_gui_demo_models PUBLIC FILE_SET demo_model_modules TYPE CXX_MODULES
+    BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/modules" FILES modules/gui.library_models.ixx)
+set_target_properties(epoch_gui_demo_models PROPERTIES CXX_SCAN_FOR_MODULES ON)
+target_link_libraries(epoch_gui_demo_models PUBLIC EpochGui)
+foreach(_owner IN LISTS _demo_owners)
+    if(_owner STREQUAL "Platform")
+        target_link_libraries(epoch_gui_demo_models PUBLIC EpochPlatformEngine::ModuleStatic)
+    else()
+        target_link_libraries(epoch_gui_demo_models PUBLIC Epoch::${_owner}Engine)
+    endif()
+endforeach()
+target_compile_definitions(epoch_gui_demo_models PUBLIC
+    EPOCH_DEMO_PLATFORM=${EPOCH_DEMO_PLATFORM} EPOCH_DEMO_AUDIO=${EPOCH_DEMO_AUDIO} EPOCH_DEMO_MEDIA=${EPOCH_DEMO_MEDIA})
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(epoch_gui_demo_libraries_contract tests/gui.library_models_contract.cpp)
+    set_target_properties(epoch_gui_demo_libraries_contract PROPERTIES CXX_SCAN_FOR_MODULES ON)
+    target_link_libraries(epoch_gui_demo_libraries_contract PRIVATE epoch_gui_demo_models)
+    add_test(NAME EpochGuiDemo.Libraries COMMAND epoch_gui_demo_libraries_contract)
+endif()
+
+option(EPOCHGUI_DEMO_LIBRARY_PAGE "Open directly on the interlinked libraries page" OFF)
+set(EPOCHGUI_DEMO_APP_NAME "EpochGuiDemo" CACHE STRING "Demonstration executable name")
 
 set(_epochgui_demo_renderer_source
     "${CMAKE_CURRENT_SOURCE_DIR}/src/complete_demo_renderer.cpp")
@@ -115,19 +186,27 @@ target_include_directories(epoch_gui_demo_renderer PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
-target_link_libraries(epoch_gui_demo_renderer PUBLIC EpochGui)
+target_link_libraries(epoch_gui_demo_renderer PUBLIC epoch_gui_demo_models)
 target_compile_features(epoch_gui_demo_renderer PUBLIC cxx_std_23)
+target_compile_definitions(epoch_gui_demo_renderer PRIVATE EPOCHGUI_DEMO_LIBRARY_PAGE=$<BOOL:${EPOCHGUI_DEMO_LIBRARY_PAGE}> EPOCHGUI_DEMO_PLATFORM_HOSTED=$<STREQUAL:${EPOCHGUI_DEMO_HOST},platform>)
 
 if(WIN32)
     enable_language(RC)
 
+    set(_demo_windows_host src/platform/complete_windows_main.cpp)
+    if(EPOCHGUI_DEMO_HOST STREQUAL "platform")
+        set(_demo_windows_host src/platform/gui.platform_host_win.cpp)
+    endif()
     add_executable(epoch_gui_demo_app WIN32
-        src/platform/complete_windows_main.cpp
+        ${_demo_windows_host}
         src/platform/windows_resources.rc
         src/platform/windows_message_coords.hpp
         src/platform/epochgui_demo.ico
     )
 
+    if(EPOCHGUI_DEMO_HOST STREQUAL "platform")
+        target_link_libraries(epoch_gui_demo_app PRIVATE EpochPlatformEngine::EntrypointWindowedStatic)
+    endif()
     target_compile_definitions(epoch_gui_demo_app PRIVATE
         UNICODE
         _UNICODE
@@ -183,7 +262,7 @@ else()
 endif()
 
 set_target_properties(epoch_gui_demo_app PROPERTIES
-    OUTPUT_NAME "EpochGuiDemo"
+    OUTPUT_NAME "${EPOCHGUI_DEMO_APP_NAME}"
 )
 
 target_compile_features(epoch_gui_demo_app PRIVATE cxx_std_23)

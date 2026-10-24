@@ -1,5 +1,6 @@
 module;
 
+#include <compare>
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -18,6 +19,10 @@ import epoch.gui.rounded_rect;
 import epoch.gui.input;
 import epoch.gui.font;
 import epoch.gui.image;
+import gui.library_models;
+#if EPOCH_DEMO_MEDIA
+import media.timeline_preview;
+#endif
 
 namespace epochengine::gui_demo
 {
@@ -480,6 +485,7 @@ void main()
 
     struct OpenGLRenderer::Impl
     {
+        LibraryModels libraries{};
         OpenGLFunctions gl{};
         SceneBatch batch{};
         input::InputTracker input_tracker{};
@@ -514,7 +520,7 @@ void main()
         bool image_fit{ true };
         float splitter_fraction{ 0.37f };
         std::uint32_t selected_row{ 1 };
-        std::uint32_t page{};
+        std::uint32_t page{EPOCHGUI_DEMO_LIBRARY_PAGE ? 5u : 0u};
         std::uint32_t display_mode{ 2 };
         std::uint32_t next_focus_order{ 3 };
 
@@ -750,7 +756,7 @@ void main()
 
         void update_navigation(const input::InputFrame& frame) noexcept
         {
-            constexpr std::array<float, 5> widths{ 116.0f, 116.0f, 116.0f, 116.0f, 116.0f };
+            constexpr std::array<float, 6> widths{ 106.0f, 106.0f, 106.0f, 106.0f, 106.0f, 116.0f };
             const gui::SegmentedControlLayoutOptions options{
                 .position = { 22.0f, 67.0f },
                 .item_widths = widths,
@@ -1221,8 +1227,8 @@ void main()
         {
             batch.append_rect({ { 0.0f, custom_title_height }, { canvas_width, toolbar_height } }, toolbar_fill);
             batch.append_rect({ { 0.0f, workspace_top - 1.0f }, { canvas_width, 1.0f } }, panel_border);
-            constexpr std::array<float, 5> widths{ 116.0f,116.0f,116.0f,116.0f,116.0f };
-            constexpr std::array<std::string_view, 5> labels{ "OVERVIEW","WINDOWS","TEXT","IMAGE","INPUT" };
+            constexpr std::array<float, 6> widths{ 106.0f,106.0f,106.0f,106.0f,106.0f,116.0f };
+            constexpr std::array<std::string_view, 6> labels{ "OVERVIEW","WINDOWS","TEXT","IMAGE","INPUT","LIBRARIES" };
             const gui::SegmentedControlLayoutOptions options{
                 .position = { 22.0f, 67.0f },
                 .item_widths = widths,
@@ -1242,6 +1248,7 @@ void main()
                     selected ? text_primary : text_secondary);
             }
 
+            if (EPOCHGUI_DEMO_PLATFORM_HOSTED) return;
             const gui::Rect toggle = frame_toggle_rect();
             const bool hovered = gui::contains(toggle, frame.pointer_position);
             draw_surface(batch, toggle, true, 16.0f,
@@ -1274,7 +1281,7 @@ void main()
             draw_text(batch, 18.0f, 594.0f, "FOR CONTEXT MENU", 1.15f, text_muted);
             draw_text(batch, 18.0f, 640.0f, "INPUT FALLBACK", 1.25f, green);
             draw_text(batch, 18.0f, 662.0f, "ENABLED IN DEMO", 1.15f, text_muted);
-            draw_text(batch, 18.0f, 706.0f, "EPOCHGUI 0.88.70", 1.15f, accent);
+            draw_text(batch, 18.0f, 706.0f, "EPOCHGUI " + std::string(gui::version_string), 1.15f, accent);
         }
 
         void draw_overview(const input::InputFrame& frame)
@@ -1617,6 +1624,51 @@ void main()
             }
         }
 
+        void draw_libraries_page(const input::InputFrame& frame)
+        {
+            draw_text(batch, 246.0f, 140.0f, "INTERLINKED PUBLIC LIBRARIES", 1.8f, text_primary);
+#if EPOCH_DEMO_PLATFORM
+            draw_text(batch, 246.0f, 180.0f, "PLATFORM: " + libraries.platform_key, 1.3f, text_secondary);
+            draw_text(batch, 246.0f, 208.0f, libraries.native_policy.supports_parented_multiwindow
+                ? "NATIVE POLICY: PARENTED WINDOWS SUPPORTED" : "NATIVE POLICY: SINGLE/TOP-LEVEL WINDOWS", 1.15f, text_muted);
+            draw_text(batch, 246.0f, 236.0f, EPOCHGUI_DEMO_PLATFORM_HOSTED
+                ? "WINDOW AND EVENTS OWNED BY PLATFORM DRIVER" : "PLATFORM POLICY ONLY; NATIVE DEMO HOST", 1.15f, text_muted);
+#else
+            draw_text(batch, 246.0f, 180.0f, "GUI WITH EXISTING NATIVE DEMO HOST", 1.3f, text_secondary);
+#endif
+#if EPOCH_DEMO_MEDIA
+            draw_text(batch, 246.0f, 286.0f, "MEDIA: GENERATED 1920 X 1080 / 30 FPS METADATA", 1.3f, text_primary);
+            draw_text(batch, 246.0f, 314.0f, "NO DECODED VIDEO - TRANSPORT AND FIT GEOMETRY ONLY", 1.15f, text_muted);
+#endif
+            const gui::Rect step{{246.0f, 350.0f}, {220.0f, 36.0f}};
+            const bool hover = gui::contains(step, frame.pointer_position);
+            draw_surface(batch, step, true, 7.0f, hover ? control_hover : control_fill, panel_border, 1.0f);
+            draw_text(batch, 258.0f, 362.0f, "ADVANCE HALF SECOND", 1.2f, text_secondary);
+            if (!context_popup.open && hover && frame.pointer(input::PointerButton::left).released)
+                (void)libraries.step();
+            const auto progress = libraries.progress({{246.0f, 402.0f}, {600.0f, 16.0f}});
+            batch.append_rect(progress.track, control_fill);
+            batch.append_rect(progress.fill, accent);
+#if EPOCH_DEMO_MEDIA
+            draw_text(batch, 246.0f, 438.0f, "PLAYHEAD: " + std::to_string(libraries.timeline.playhead_seconds), 1.2f, text_secondary);
+            if (libraries.timeline.source)
+            {
+                const auto fit = media::timeline_preview::contain_fit(*libraries.timeline.source, {900.0, 286.0, 300.0, 180.0});
+                if (fit) batch.append_rect({{static_cast<float>(fit->x), static_cast<float>(fit->y)},
+                    {static_cast<float>(fit->width), static_cast<float>(fit->height)}}, panel_border);
+                draw_text(batch, 910.0f, 480.0f, "ASPECT FIT GEOMETRY", 1.1f, text_muted);
+            }
+#endif
+#if EPOCH_DEMO_AUDIO
+            draw_text(batch, 246.0f, 510.0f, "AUDIO: GENERATED PCM MIX - NO OUTPUT DEVICE", 1.3f, text_primary);
+            draw_text(batch, 246.0f, 546.0f, "MIXED FRAMES: " + std::to_string(libraries.mixer.metrics().frames_produced), 1.2f, text_secondary);
+            draw_text(batch, 246.0f, 578.0f, "LAST SOURCES: " + std::to_string(libraries.mixed.metrics.mixed_sources)
+                + "  SAMPLES: " + std::to_string(libraries.mixed.interleaved_samples.size()), 1.2f, text_secondary);
+#endif
+            draw_text(batch, 246.0f, 620.0f, libraries.ready ? "LIBRARY MODELS READY" : "LIBRARY MODEL FAILED", 1.25f,
+                libraries.ready ? green : warning);
+        }
+
         void build_scene()
         {
             batch.clear();
@@ -1636,6 +1688,7 @@ void main()
             case 2: draw_text_page(); break;
             case 3: draw_image_page(frame); break;
             case 4: draw_input_page(frame); break;
+            case 5: draw_libraries_page(frame); break;
             default: break;
             }
             draw_context_menu(frame);

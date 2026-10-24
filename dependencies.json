@@ -1,0 +1,11 @@
+{
+  "schema": "epoch.source_distribution.v1",
+  "source_revisions": {
+    "Gui": "f83b2f15385598b8efbb028a6f391ca637e07634",
+    "Platform": "c1b20ea9bf80fb213b5499a8857a9a0066db5ccd",
+    "Audio": "89d151605830883e0d00723fa478b348e742e638",
+    "Media": "4dbb222aab13624cf53d699453e00e4db26cb8d9"
+  },
+  "release_ready": false,
+  "note": "Exact published source revisions; Platform hosted Windows/Linux Debug/Release checks passed; Demo hosted CI and native acceptance remain pending. Binary/release publication is gated."
+}

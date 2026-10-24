@@ -1,22 +1,13 @@
 name: EpochGui Demo Linux Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - CMakeLists.txt
-      - CMakePresets.json
-      - VERSION
-      - README.md
-      - assets/**
-      - include/**
-      - modules/**
-      - src/**
-      - build_linux.sh
-      - .github/workflows/windows-release.yml
-      - .github/workflows/linux-release.yml
   workflow_dispatch:
+    inputs:
+      release_authorized:
+        description: Publish a new accepted tag after source and runtime approval
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: write
@@ -28,6 +19,7 @@ concurrency:
 
 jobs:
   linux:
+    if: inputs.release_authorized && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
 
     steps:
@@ -68,11 +60,15 @@ jobs:
           echo "number=$issue_number" >> "$GITHUB_OUTPUT"
           echo "LINUX_STATUS_ISSUE=$issue_number" >> "$GITHUB_ENV"
 
+      - name: Require accepted release graph
+        shell: bash
+        run: python -c "import json; assert json.load(open('dependencies.json'))['release_ready'] is True, 'Release graph has not been accepted'"
+
       - name: Check out EpochGui
         uses: actions/checkout@v4
         with:
           repository: Autodidac/EpochGui
-          ref: main
+          ref: f83b2f15385598b8efbb028a6f391ca637e07634
           path: EpochGui
 
       - name: Install Linux build dependencies
@@ -170,7 +166,7 @@ jobs:
           mkdir -p "$stage/assets"
 
           install -m 0755 "$source_binary" "$stage/EpochGuiDemo"
-          install -m 0644 README.md "$stage/README.md"
+          install -m 0644 README.md LICENSE "$stage/"
           install -m 0644 assets/epochgui_demo.ppm "$stage/assets/epochgui_demo.ppm"
 
           cat > "$stage/BUILD.txt" <<EOF
@@ -231,7 +227,7 @@ jobs:
               || gh release view "$tag" >/dev/null
           fi
 
-          gh release upload "$tag" "$archive" "$checksum" --clobber
+          gh release upload "$tag" "$archive" "$checksum"
 
       - name: Close verified Linux release status
         shell: bash
