@@ -8,11 +8,25 @@
 #endif
 #include <windows.h>
 #include <GL/gl.h>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include "epochgui_demo/app_bridge.hpp"
 namespace epochgui_demo::win32
 {
+    // Convert the catalog's logical canvas once at native creation. Include
+    // non-client chrome in the work-area limit; never resize through a second host.
+    [[nodiscard]] inline SIZE preferred_canvas_client_size(
+        UINT dpi, int work_width, int work_height, int chrome_width, int chrome_height) noexcept
+    {
+        const int scale = static_cast<int>(dpi ? dpi : 96u);
+        const int available_width = (std::max)(1, work_width - chrome_width);
+        const int available_height = (std::max)(1, work_height - chrome_height);
+        const int width = (std::min)(MulDiv(1280, scale, 96), available_width);
+        const int height = (std::min)(MulDiv(820, scale, 96), available_height);
+        return {width, height};
+    }
+
     constexpr int WGL_CONTEXT_MAJOR_VERSION_ARB = 0x2091;
     constexpr int WGL_CONTEXT_MINOR_VERSION_ARB = 0x2092;
     constexpr int WGL_CONTEXT_FLAGS_ARB = 0x2094;

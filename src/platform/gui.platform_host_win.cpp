@@ -106,7 +106,7 @@ namespace
         {
             auto created = runtime.create_context({.driver = host::DriverKind::win32,
                 .type = host::ContextType::opengl, .thread_policy = host::ThreadPolicy::caller_thread,
-                .window = {.title = "EpochGui - Platform-owned native window", .width = 1280, .height = 800},
+                .window = {.title = "EpochGui - Platform-owned native window", .width = 1280, .height = 820},
                 .route = "gui-demo"}, {
                 .initialize = [this](const host::ContextSnapshot& snapshot) -> host::Status {
                     window_ = static_cast<HWND>(snapshot.native.window);
@@ -136,6 +136,22 @@ namespace
                 .event = [this](const host::WindowEvent& value) { event(value); }
             });
             if (!created) return std::unexpected(created.error());
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            if (GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor))
+            {
+                RECT outer{}, client{};
+                if (GetWindowRect(window_, &outer) && GetClientRect(window_, &client))
+                {
+                    const auto preferred = epochgui_demo::win32::preferred_canvas_client_size(
+                        GetDpiForWindow(window_),
+                        monitor.rcWork.right - monitor.rcWork.left,
+                        monitor.rcWork.bottom - monitor.rcWork.top,
+                        (outer.right - outer.left) - (client.right - client.left),
+                        (outer.bottom - outer.top) - (client.bottom - client.top));
+                    if (auto resized = runtime.resize(*created, preferred.cx, preferred.cy); !resized)
+                        return resized;
+                }
+            }
             return {};
         }
         bool on_frame(host::Runtime&, std::chrono::nanoseconds) override { return true; }
