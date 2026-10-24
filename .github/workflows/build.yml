@@ -57,7 +57,7 @@ jobs:
         shell: pwsh
         run: |
           $hostKind = if ('${{ matrix.composition }}' -in @('platform','full')) { 'platform' } else { 'native' }
-          .ci-tools/Scripts/cmake -S . -B out -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DEPOCHGUI_DEMO_COMPOSITION=${{ matrix.composition }} -DEPOCHGUI_DEMO_HOST=$hostKind -DEPOCHGUI_ROOT="$pwd/dependencies/EpochGui" -DEPOCH_PLATFORM_ROOT="$pwd/dependencies/EpochPlatformEngine" -DEPOCH_AUDIO_ROOT="$pwd/dependencies/EpochAudioEngine" -DEPOCH_MEDIA_ROOT="$pwd/dependencies/EpochMediaEngine" -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+          .ci-tools/Scripts/cmake -S . -B out -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DEPOCHGUI_DEMO_COMPOSITION=${{ matrix.composition }} "-DEPOCHGUI_DEMO_HOST=$hostKind" "-DEPOCHGUI_ROOT=$pwd/dependencies/EpochGui" "-DEPOCH_PLATFORM_ROOT=$pwd/dependencies/EpochPlatformEngine" "-DEPOCH_AUDIO_ROOT=$pwd/dependencies/EpochAudioEngine" "-DEPOCH_MEDIA_ROOT=$pwd/dependencies/EpochMediaEngine" -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build application and consumer
         run: .ci-tools/Scripts/cmake --build out --config ${{ matrix.configuration }} --parallel 2
