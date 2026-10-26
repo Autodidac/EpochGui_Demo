@@ -1,6 +1,7 @@
 #include "epochgui_demo/app_bridge.hpp"
 
 #include <new>
+#include <string>
 #include <string_view>
 
 import epoch.gui.demo.opengl;
@@ -8,7 +9,23 @@ import epoch.gui.demo.opengl;
 struct epoch_gui_demo_renderer
 {
     epochengine::gui_demo::OpenGLRenderer renderer{};
+    std::string copied_text{};
 };
+
+const char* epoch_gui_demo_edit_command(epoch_gui_demo_renderer* renderer,
+    int command, const char* pasted_utf8)
+{
+    if (!renderer) return "";
+    renderer->copied_text = renderer->renderer.edit_command(command,
+        pasted_utf8 ? std::string_view{pasted_utf8} : std::string_view{});
+    return renderer->copied_text.c_str();
+}
+
+void epoch_gui_demo_set_clipboard(epoch_gui_demo_renderer* renderer,
+    const char* (*reader)(void*), bool (*writer)(void*, const char*), void* user)
+{
+    if (renderer) renderer->renderer.set_clipboard(reader, writer, user);
+}
 
 namespace
 {

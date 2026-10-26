@@ -61,11 +61,13 @@ namespace
                 break;
             case key_pressed:
             case key_released:
-                if (const int key = epochgui_demo::win32::key_from_virtual_key(event.key); key >= 0)
-                    epoch_gui_demo_key_event(renderer_, key, event.type == key_pressed, event.repeated);
                 epoch_gui_demo_modifiers(renderer_, (GetKeyState(VK_SHIFT) & 0x8000) != 0,
                     (GetKeyState(VK_CONTROL) & 0x8000) != 0, (GetKeyState(VK_MENU) & 0x8000) != 0,
                     (GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0);
+                if (epochgui_demo::win32::dispatch_edit_shortcut(renderer_, event.key,
+                        event.type == key_pressed, event.repeated)) break;
+                if (const int key = epochgui_demo::win32::key_from_virtual_key(event.key); key >= 0)
+                    epoch_gui_demo_key_event(renderer_, key, event.type == key_pressed, event.repeated);
                 break;
             case text_input:
             {
@@ -116,6 +118,7 @@ namespace
                     renderer_ = epoch_gui_demo_create();
                     if (!renderer_ || !epoch_gui_demo_initialize(renderer_, &epochgui_demo::win32::load_opengl_proc))
                         return std::unexpected(host::Error{host::ErrorCode::initialization_failed, "GUI renderer initialization failed"});
+                    epochgui_demo::win32::configure_renderer_clipboard(renderer_);
                     RECT client{};
                     GetClientRect(window_, &client);
                     epoch_gui_demo_resize(renderer_, client.right, client.bottom);

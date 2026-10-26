@@ -1,238 +1,105 @@
-name: EpochGui Demo Linux Release
-
+name: Linux demonstration candidate
 on:
   workflow_dispatch:
-    inputs:
-      release_authorized:
-        description: Publish a new accepted tag after source and runtime approval
-        type: boolean
-        required: true
-        default: false
-
 permissions:
-  contents: write
-  issues: write
-
+  contents: read
 concurrency:
-  group: epochgui-demo-linux-${{ github.ref }}
+  group: demo-linux-candidate-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
-  linux:
-    if: inputs.release_authorized && startsWith(github.ref, 'refs/tags/v')
+  candidate:
     runs-on: ubuntu-24.04
-
+    timeout-minutes: 90
     steps:
-      - name: Check out EpochGui demo
-        uses: actions/checkout@v4
-
-      - name: Open Linux release status
-        id: status
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          version="$(tr -d '[:space:]' < VERSION)"
-          title="EpochGui Demo Linux release status v${version}"
-          body_path="${RUNNER_TEMP}/linux-status.md"
-
-          cat > "$body_path" <<EOF
-          Linux x64 release verification started for commit \`${GITHUB_SHA}\`.
-
-          This issue closes only after the Linux archive and SHA-256 checksum are attached to the matching GitHub release.
-          EOF
-
-          issue_number="$(gh issue list \
-            --state all \
-            --search 'EpochGui Demo Linux release status in:title' \
-            --json number \
-            --jq '.[0].number')"
-
-          if [[ -n "$issue_number" ]]; then
-            gh issue reopen "$issue_number" >/dev/null 2>&1 || true
-            gh issue edit "$issue_number" --title "$title" --body-file "$body_path"
-          else
-            issue_url="$(gh issue create --title "$title" --body-file "$body_path")"
-            issue_number="${issue_url##*/}"
-          fi
-
-          echo "number=$issue_number" >> "$GITHUB_OUTPUT"
-          echo "LINUX_STATUS_ISSUE=$issue_number" >> "$GITHUB_ENV"
-
-      - name: Require accepted release graph
-        shell: bash
-        run: python -c "import json; assert json.load(open('dependencies.json'))['release_ready'] is True, 'Release graph has not been accepted'"
-
-      - name: Check out EpochGui
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve exact public dependency graph
+        id: pins
+        run: python .github/dependency_pins.py full
+      - uses: actions/checkout@v5
         with:
           repository: Autodidac/EpochGui
-          ref: f83b2f15385598b8efbb028a6f391ca637e07634
-          path: EpochGui
-
-      - name: Install Linux build dependencies
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            clang-18 \
-            clang-tools-18 \
-            cmake \
-            ninja-build \
-            libgl1-mesa-dev \
-            libx11-dev \
-            libxext-dev
-
-      - name: Configure
-        shell: bash
-        run: |
-          set -o pipefail
-          cmake -S . -B build/linux-release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DBUILD_TESTING=ON \
-            -DEPOCHGUI_ENABLE_ROUNDED_RECT=ON \
-            -DEPOCHGUI_ENABLE_INPUT=ON \
-            -DEPOCHGUI_ROOT="${GITHUB_WORKSPACE}/EpochGui" \
-            2>&1 | tee configure-output.log
-
-      - name: Build
-        shell: bash
-        run: |
-          set -o pipefail
-          cmake --build build/linux-release --parallel \
-            2>&1 | tee build-output.log
-
-      - name: Run EpochGui tests
-        shell: bash
-        run: |
-          set -o pipefail
-          ctest --test-dir build/linux-release --output-on-failure \
-            2>&1 | tee test-output.log
-
-      - name: Publish Linux failure diagnostic
-        if: failure() && env.LINUX_STATUS_ISSUE != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          body_path="${RUNNER_TEMP}/linux-failure.md"
-          {
-            echo "Linux x64 release verification failed for commit \`${GITHUB_SHA}\`."
-            echo
-            for entry in \
-              "Configure:configure-output.log" \
-              "Build:build-output.log" \
-              "Tests:test-output.log"; do
-              name="${entry%%:*}"
-              path="${entry#*:}"
-              if [[ -f "$path" ]]; then
-                echo "### $name"
-                echo '```text'
-                tail -n 180 "$path"
-                echo '```'
-                echo
-              fi
-            done
-          } > "$body_path"
-          gh issue edit "$LINUX_STATUS_ISSUE" --body-file "$body_path"
-
-      - name: Package Linux x64 archive
-        id: package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          version="$(tr -d '[:space:]' < VERSION)"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "VERSION must contain major.minor.patch" >&2
-            exit 1
-          fi
-
-          source_binary="${GITHUB_WORKSPACE}/build/linux-release/EpochGuiDemo"
-          if [[ ! -x "$source_binary" ]]; then
-            echo "Expected executable was not built: $source_binary" >&2
-            exit 1
-          fi
-
-          stage_name="EpochGui_Demo-v${version}-linux-x64"
-          stage="${RUNNER_TEMP}/${stage_name}"
-          archive="${GITHUB_WORKSPACE}/${stage_name}.tar.gz"
-          checksum="${archive}.sha256"
-
-          rm -rf "$stage" "$archive" "$checksum"
-          mkdir -p "$stage/assets"
-
-          install -m 0755 "$source_binary" "$stage/EpochGuiDemo"
-          install -m 0644 README.md LICENSE "$stage/"
-          install -m 0644 assets/epochgui_demo.ppm "$stage/assets/epochgui_demo.ppm"
-
-          cat > "$stage/BUILD.txt" <<EOF
-          EpochGui Demo v${version}
-          Commit: ${GITHUB_SHA}
-          Platform: Linux x64
-          Compiler: Clang 18
-          Renderer: OpenGL 3.2 core through native X11/GLX
-          Library: Autodidac/EpochGui
-          Input: optional EpochGui fallback enabled for the standalone demo
-          Window chrome: custom EpochGui title bar with native decorations enabled by default and toggleable at runtime
-          Icon: _NET_WM_ICON supplied by the native X11 host
-          Responsiveness: X11 events are drained and coalesced before GLX rendering
-          Contents: one user-facing executable plus README, BUILD metadata, and the demo image asset
-          EOF
-
-          tar -C "$RUNNER_TEMP" -czf "$archive" "$stage_name"
-          (
-            cd "$GITHUB_WORKSPACE"
-            sha256sum "$(basename "$archive")"
-          ) > "$checksum"
-
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
-          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
-
-      - name: Upload Linux workflow artifact
-        uses: actions/upload-artifact@v4
+          ref: ${{ steps.pins.outputs.gui }}
+          path: dependencies/EpochGui
+          persist-credentials: false
+      - uses: actions/checkout@v5
         with:
-          name: epochgui-demo-linux
-          path: |
-            ${{ steps.package.outputs.archive }}
-            ${{ steps.package.outputs.checksum }}
-          if-no-files-found: error
-
-      - name: Attach Linux files to GitHub release
+          repository: Autodidac/EpochPlatformEngine
+          ref: ${{ steps.pins.outputs.platform }}
+          path: dependencies/EpochPlatformEngine
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: Autodidac/EpochAudioEngine
+          ref: ${{ steps.pins.outputs.audio }}
+          path: dependencies/EpochAudioEngine
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: Autodidac/EpochMediaEngine
+          ref: ${{ steps.pins.outputs.media }}
+          path: dependencies/EpochMediaEngine
+          persist-credentials: false
+      - name: Check source package boundaries
+        run: python -B -m unittest discover -s tests -p '*_test.py'
+      - name: Install native Clang build prerequisites
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="${{ steps.package.outputs.tag }}"
-          archive="${{ steps.package.outputs.archive }}"
-          checksum="${{ steps.package.outputs.checksum }}"
-
-          for _ in $(seq 1 60); do
-            if gh release view "$tag" >/dev/null 2>&1; then
-              break
-            fi
-            sleep 5
-          done
-
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" \
-              --target "$GITHUB_SHA" \
-              --title "EpochGui Demo $tag" \
-              --notes "Cross-platform EpochGui interactive catalog release." \
-              || gh release view "$tag" >/dev/null
-          fi
-
-          gh release upload "$tag" "$archive" "$checksum"
-
-      - name: Close verified Linux release status
+          sudo apt-get update
+          sudo apt-get install -y curl ninja-build g++-14 libgl1-mesa-dev libx11-dev libxext-dev
+          curl --fail --location --retry 3 https://apt.llvm.org/llvm.sh -o "$RUNNER_TEMP/llvm.sh"
+          sudo bash "$RUNNER_TEMP/llvm.sh" 22
+          sudo apt-get install -y clang-tools-22
+          python -m pip install cmake==4.4.2
+      - name: Build complete offline source candidate
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue close "$LINUX_STATUS_ISSUE" \
-            --comment "Linux x64 archive and SHA-256 checksum attached successfully for commit \`${GITHUB_SHA}\`: \`EpochGui_Demo-v$(tr -d '[:space:]' < VERSION)-linux-x64.tar.gz\`."
+          set -euo pipefail
+          python -B tools/package_source.py --dependency-root dependencies --output-dir build/candidates/source
+          version="$(tr -d '[:space:]' < VERSION)"
+          zip="$GITHUB_WORKSPACE/build/candidates/source/EpochGui_Demo-v$version-source.zip"
+          python -m zipfile -e "$zip" build/offline-source
+          echo "DEMO_PROJECT_SOURCE=$GITHUB_WORKSPACE/build/offline-source/EpochGui_Demo-v$version-source" >> "$GITHUB_ENV"
+          echo "DEMO_SOURCE_ZIP=$zip" >> "$GITHUB_ENV"
+      - name: Debug build and CPU contracts first
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S "$DEMO_PROJECT_SOURCE" -B build/offline-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++-22 -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=clang-scan-deps-22 -DBUILD_TESTING=ON -DEPOCHGUI_DEMO_COMPOSITION=full -DEPOCHGUI_DEMO_HOST=native
+          cmake --build build/offline-debug --parallel 2
+          ctest --test-dir build/offline-debug --output-on-failure --timeout 60
+      - name: Release build and CPU contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S "$DEMO_PROJECT_SOURCE" -B build/offline-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++-22 -DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=clang-scan-deps-22 -DBUILD_TESTING=ON -DEPOCHGUI_DEMO_COMPOSITION=full -DEPOCHGUI_DEMO_HOST=native
+          cmake --build build/offline-release --parallel 2
+          ctest --test-dir build/offline-release --output-on-failure --timeout 60
+          ldd build/offline-release/EpochGuiDemo > build/offline-release/shared-libraries.txt
+          if grep -F 'not found' build/offline-release/shared-libraries.txt; then exit 1; fi
+      - name: Package the exact extracted-source executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tools/package_runtime.py --binary build/offline-release/EpochGuiDemo --source-zip "$DEMO_SOURCE_ZIP" --platform linux-x64 --output-dir build/candidates/runtime
+          python -B .github/audit_source.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-linux-candidate
+          retention-days: 7
+          if-no-files-found: error
+          include-hidden-files: false
+          path: |
+            build/candidates/source/*.zip
+            build/candidates/source/*.zip.sha256
+            build/candidates/runtime/*.zip
+            build/candidates/runtime/*.zip.sha256
+            build/audits/source-audit.json
+      - name: Native acceptance remains separate
+        shell: bash
+        run: echo 'Candidate artifacts only. Linux native input, drawing and shutdown remain an owner acceptance gate.' >> "$GITHUB_STEP_SUMMARY"

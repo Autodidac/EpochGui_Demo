@@ -72,6 +72,13 @@ extern "C"
 
     struct epoch_gui_demo_renderer;
 
+    // 0 Select all, 1 Copy, 2 Cut, 3 Paste, 4 Undo, 5 Redo.
+    // Returned UTF-8 remains valid until the next edit command or destruction.
+    const char* epoch_gui_demo_edit_command(epoch_gui_demo_renderer* renderer,
+        int command, const char* pasted_utf8);
+    void epoch_gui_demo_set_clipboard(epoch_gui_demo_renderer* renderer,
+        const char* (*reader)(void*), bool (*writer)(void*, const char*), void* user);
+
     [[nodiscard]] epoch_gui_demo_renderer* epoch_gui_demo_create(void);
     void epoch_gui_demo_destroy(epoch_gui_demo_renderer* renderer);
 

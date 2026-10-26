@@ -103,6 +103,7 @@ namespace
             renderer_ = epoch_gui_demo_create();
             if (!renderer_ || !epoch_gui_demo_initialize(renderer_, &load_opengl_proc))
                 return false;
+            epochgui_demo::win32::configure_renderer_clipboard(renderer_);
 
             update_renderer_size_from_client();
 
@@ -491,13 +492,18 @@ namespace
             case WM_KEYUP:
             case WM_SYSKEYUP:
             {
+                const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+                const bool repeated = down && (lparam & (1LL << 30)) != 0;
+                update_modifiers();
+                if (epochgui_demo::win32::dispatch_edit_shortcut(renderer_, wparam, down, repeated))
+                {
+                    request_render();
+                    return 0;
+                }
                 const int key = key_from_virtual_key(wparam);
                 if (key >= 0 && renderer_)
                 {
-                    const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
-                    const bool repeated = down && (lparam & (1LL << 30)) != 0;
                     epoch_gui_demo_key_event(renderer_, key, down, repeated);
-                    update_modifiers();
                     request_render();
                     return 0;
                 }

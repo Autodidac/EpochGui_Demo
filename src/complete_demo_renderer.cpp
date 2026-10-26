@@ -6,6 +6,8 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <cmath>
 #include <span>
 #include <string>
 #include <string_view>
@@ -20,6 +22,7 @@ import epoch.gui.input;
 import epoch.gui.font;
 import epoch.gui.image;
 import gui.library_models;
+import gui.text_view;
 #if EPOCH_DEMO_MEDIA
 import media.timeline_preview;
 #endif
@@ -48,6 +51,7 @@ namespace epochengine::gui_demo
         constexpr GLenum GL_DYNAMIC_DRAW = 0x88E8;
         constexpr GLenum GL_FLOAT = 0x1406;
         constexpr GLenum GL_TRIANGLES = 0x0004;
+        constexpr GLenum GL_SCISSOR_TEST = 0x0C11;
         constexpr GLenum GL_VERTEX_SHADER = 0x8B31;
         constexpr GLenum GL_FRAGMENT_SHADER = 0x8B30;
         constexpr GLenum GL_COMPILE_STATUS = 0x8B81;
@@ -136,6 +140,8 @@ namespace epochengine::gui_demo
             using ClearColor = void (*)(GLfloat, GLfloat, GLfloat, GLfloat);
             using Clear = void (*)(GLbitfield);
             using Viewport = void (*)(GLint, GLint, GLsizei, GLsizei);
+            using Enable = void (*)(GLenum);
+            using Scissor = void (*)(GLint, GLint, GLsizei, GLsizei);
 
             GenVertexArrays gen_vertex_arrays{};
             BindVertexArray bind_vertex_array{};
@@ -165,6 +171,9 @@ namespace epochengine::gui_demo
             ClearColor clear_color{};
             Clear clear{};
             Viewport viewport{};
+            Enable enable{};
+            Enable disable{};
+            Scissor scissor{};
 
             [[nodiscard]] bool load(OpenGLProcLoader loader) noexcept
             {
@@ -197,7 +206,10 @@ namespace epochengine::gui_demo
                     && load_function(draw_arrays, loader, "glDrawArrays")
                     && load_function(clear_color, loader, "glClearColor")
                     && load_function(clear, loader, "glClear")
-                    && load_function(viewport, loader, "glViewport");
+                    && load_function(viewport, loader, "glViewport")
+                    && load_function(enable, loader, "glEnable")
+                    && load_function(disable, loader, "glDisable")
+                    && load_function(scissor, loader, "glScissor");
             }
         };
 
@@ -206,24 +218,28 @@ namespace epochengine::gui_demo
             GLint first{};
             GLsizei count{};
             Color color{};
+            std::optional<gui::Rect> clip{};
         };
 
         struct SceneBatch
         {
             std::vector<gui::Vec2> vertices{};
             std::vector<DrawCommand> commands{};
+            gui::Vec2 translation{};
+            std::optional<gui::Rect> clip{};
 
             void clear()
             {
                 vertices.clear();
                 commands.clear();
+                translation = {};
+                clip.reset();
             }
 
             void append_triangle(gui::Vec2 a, gui::Vec2 b, gui::Vec2 c)
             {
-                vertices.push_back(a);
-                vertices.push_back(b);
-                vertices.push_back(c);
+                for (auto point : {a, b, c})
+                    vertices.push_back({point.x + translation.x, point.y + translation.y});
             }
 
             void append_rect(gui::Rect rect, Color color)
@@ -237,7 +253,7 @@ namespace epochengine::gui_demo
                 const float bottom = top + rect.size.y;
                 append_triangle({ left, top }, { right, top }, { right, bottom });
                 append_triangle({ left, top }, { right, bottom }, { left, bottom });
-                commands.push_back({ first, 6, color });
+                commands.push_back({ first, 6, color, clip });
             }
 
             void append_indexed(
@@ -251,12 +267,34 @@ namespace epochengine::gui_demo
                 for (const std::uint32_t index : indices)
                 {
                     if (index < mesh.vertices.size())
-                        vertices.push_back(mesh.vertices[index]);
+                        vertices.push_back({mesh.vertices[index].x + translation.x,
+                                            mesh.vertices[index].y + translation.y});
                 }
                 const GLsizei count = static_cast<GLsizei>(vertices.size()) - first;
                 if (count > 0)
-                    commands.push_back({ first, count, color });
+                    commands.push_back({ first, count, color, clip });
             }
+        };
+
+        [[nodiscard]] gui::Rect intersection(gui::Rect a, gui::Rect b) noexcept
+        {
+            const float x = (std::max)(a.position.x, b.position.x);
+            const float y = (std::max)(a.position.y, b.position.y);
+            return {{x, y}, {(std::max)(0.0f, (std::min)(a.position.x + a.size.x, b.position.x + b.size.x) - x),
+                             (std::max)(0.0f, (std::min)(a.position.y + a.size.y, b.position.y + b.size.y) - y)}};
+        }
+
+        struct ClipScope
+        {
+            SceneBatch& batch;
+            std::optional<gui::Rect> previous;
+            ClipScope(SceneBatch& target, gui::Rect local) : batch(target), previous(target.clip)
+            {
+                local.position.x += target.translation.x;
+                local.position.y += target.translation.y;
+                target.clip = previous ? intersection(*previous, local) : local;
+            }
+            ~ClipScope() { batch.clip = previous; }
         };
 
         [[nodiscard]] gui::Rect inset(gui::Rect rect, float amount) noexcept
@@ -501,6 +539,7 @@ void main()
         gui::PopupState context_popup{};
         gui::PopupLayout context_layout{};
         gui::Vec2 context_anchor{};
+        bool context_text{};
 
         gui::DockLayoutState dock_state{};
         std::array<gui::DockPaneState, 3> dock_panes{};
@@ -523,6 +562,18 @@ void main()
         std::uint32_t page{EPOCHGUI_DEMO_LIBRARY_PAGE ? 5u : 0u};
         std::uint32_t display_mode{ 2 };
         std::uint32_t next_focus_order{ 3 };
+        std::array<bool, 4> showcase_open{true, true, true, false};
+        float showcase_scroll{};
+        bool showcase_scroll_drag{};
+        float showcase_scroll_grab{};
+        bool text_drag{};
+        std::string demo_clipboard{};
+        const char* (*clipboard_read)(void*){};
+        bool (*clipboard_write)(void*, const char*){};
+        void* clipboard_user{};
+        std::string edit_status{"WHEEL SCROLLS NOTES. TEXT AND CARET STAY IN THEIR FIELD."};
+        float demo_value{0.68f};
+        bool show_tips{true};
 
         GLuint program{};
         GLuint vertex_array{};
@@ -538,9 +589,9 @@ void main()
             reset_windows();
             rebuild_chrome();
             reset_docking();
-            edit_state.text = "EDIT ME";
-            multiline_state.text = "MULTILINE TEXT\nTYPE HERE";
-            static_state.text = "READ ONLY STATIC TEXT\nUSES THE SAME TEXT CONTROL STATE\nWITH READ ONLY ENABLED";
+            edit_state.text = "A SMALL PROJECT";
+            multiline_state.text = "Write a note here. Long lines wrap inside this editor.\n\nDrag to select, use Shift + arrows, or try the editing buttons below.\n\nThe mouse wheel scrolls this field without moving the caret.\n\nPaste several paragraphs to test clipping and scroll limits.";
+            static_state.text = "READ ONLY\n\nThis uses the same EpochGui text controller as the editable field.\n\nText, selection and the caret stay inside their own viewport.\n\nThe showcase uses the public library APIs; it does not need EpochEngine.";
             demo_image = load_demo_image();
         }
 
@@ -756,7 +807,8 @@ void main()
 
         void update_navigation(const input::InputFrame& frame) noexcept
         {
-            constexpr std::array<float, 6> widths{ 106.0f, 106.0f, 106.0f, 106.0f, 106.0f, 116.0f };
+            constexpr std::array<float, 3> widths{ 150.0f, 174.0f, 160.0f };
+            constexpr std::array<std::uint32_t, 3> pages{0, 1, 5};
             const gui::SegmentedControlLayoutOptions options{
                 .position = { 22.0f, 67.0f },
                 .item_widths = widths,
@@ -766,9 +818,103 @@ void main()
             if (frame.pointer(input::PointerButton::left).released)
             {
                 const std::uint32_t item = gui::segmented_control_item_at(options, frame.pointer_position);
-                if (item != gui::invalid_selectable_row_index)
-                    page = item;
+                if (item < pages.size())
+                {
+                    page = pages[item];
+                    active_text_control = 0;
+                    edit_state.focused = multiline_state.focused = static_state.focused = false;
+                }
+                for (std::size_t index = 0; index < showcase_open.size(); ++index)
+                {
+                    if (!gui::contains({{14.0f, 180.0f + static_cast<float>(index) * 52.0f}, {186.0f, 42.0f}}, frame.pointer_position))
+                        continue;
+                    page = 0;
+                    showcase_open[index] = true;
+                    showcase_scroll += section_header(index).position.y - showcase_viewport().position.y;
+                    showcase_scroll = (std::max)(0.0f, showcase_scroll);
+                }
             }
+        }
+
+        [[nodiscard]] static gui::Rect showcase_viewport() noexcept
+        {
+            return {{234.0f, 184.0f}, {1008.0f, 612.0f}};
+        }
+
+        [[nodiscard]] gui::Rect section_header(std::size_t index) const noexcept
+        {
+            float y = showcase_viewport().position.y - showcase_scroll;
+            for (std::size_t previous = 0; previous < index; ++previous)
+                y += showcase_open[previous] ? 656.0f : 48.0f;
+            return {{246.0f, y}, {984.0f, 34.0f}};
+        }
+
+        [[nodiscard]] float showcase_extent() const noexcept
+        {
+            float extent{};
+            for (const bool open : showcase_open) extent += open ? 656.0f : 48.0f;
+            return extent;
+        }
+
+        [[nodiscard]] gui::ScrollbarLayout showcase_scrollbar() const noexcept
+        {
+            return gui::make_scrollbar_layout({
+                .track = {{1250.0f, showcase_viewport().position.y}, {12.0f, showcase_viewport().size.y}},
+                .content_extent = showcase_extent(), .scroll_offset = showcase_scroll,
+                .minimum_thumb_extent = 36.0f});
+        }
+
+        [[nodiscard]] input::InputFrame section_input(const input::InputFrame& frame,
+            std::size_t section) const noexcept
+        {
+            auto local = frame;
+            local.pointer_position.y -= section_header(section).position.y + 44.0f - 184.0f;
+            if (!gui::contains(showcase_viewport(), frame.pointer_position))
+            {
+                local.pointer_buttons = {};
+                local.wheel_delta = {};
+                local.pointer_position = {-10000.0f, -10000.0f};
+            }
+            return local;
+        }
+
+        void update_showcase(const input::InputFrame& frame)
+        {
+            const auto& left = frame.pointer(input::PointerButton::left);
+            auto scroll = showcase_scrollbar();
+            if (left.pressed && gui::contains(scroll.track, frame.pointer_position))
+            {
+                showcase_scroll_drag = true;
+                showcase_scroll_grab = gui::scrollbar_grab_offset(scroll, frame.pointer_position.y,
+                    gui::contains(scroll.thumb, frame.pointer_position));
+            }
+            if (showcase_scroll_drag && left.down)
+                showcase_scroll = gui::scrollbar_offset_from_pointer(scroll, frame.pointer_position.y, showcase_scroll_grab);
+            if (!left.down) showcase_scroll_drag = false;
+            if (left.released && gui::contains(showcase_viewport(), frame.pointer_position))
+                for (std::size_t index = 0; index < showcase_open.size(); ++index)
+                    if (gui::contains(section_header(index), frame.pointer_position))
+                    {
+                        showcase_open[index] = !showcase_open[index];
+                        if (index == 1 && !showcase_open[index])
+                        {
+                            active_text_control = 0;
+                            edit_state.focused = multiline_state.focused = static_state.focused = false;
+                        }
+                        break;
+                    }
+            const auto text_frame = section_input(frame, 1);
+            const bool field_wheel = showcase_open[1]
+                && (gui::contains({{270.0f, 316.0f}, {430.0f, 190.0f}}, text_frame.pointer_position)
+                    || gui::contains({{744.0f, 210.0f}, {440.0f, 296.0f}}, text_frame.pointer_position));
+            if (gui::contains(showcase_viewport(), frame.pointer_position) && !field_wheel)
+                showcase_scroll -= frame.wheel_delta.y * 46.0f;
+            scroll = showcase_scrollbar();
+            showcase_scroll = (std::clamp)(showcase_scroll, 0.0f, scroll.maximum_scroll_offset);
+            if (showcase_open[0]) update_overview(section_input(frame, 0));
+            if (showcase_open[1]) update_text_page(section_input(frame, 1));
+            else pending_text.clear();
+            if (showcase_open[2]) update_image_page(section_input(frame, 2));
         }
 
         [[nodiscard]] gui::Rect frame_toggle_rect() const noexcept
@@ -778,6 +924,7 @@ void main()
 
         void update_frame_toggle(const input::InputFrame& frame) noexcept
         {
+            if (EPOCHGUI_DEMO_PLATFORM_HOSTED) return;
             if (frame.pointer(input::PointerButton::left).released
                 && gui::contains(frame_toggle_rect(), frame.pointer_position))
             {
@@ -806,7 +953,7 @@ void main()
         void update_overview(const input::InputFrame& frame) noexcept
         {
             const gui::SplitterLayoutOptions options{
-                .area = { { 250.0f, 520.0f }, { 970.0f, 190.0f } },
+                .area = { { 250.0f, 610.0f }, { 940.0f, 142.0f } },
                 .axis = gui::SplitterAxis::vertical,
                 .split_fraction = splitter_fraction,
                 .thickness = 8.0f,
@@ -819,6 +966,15 @@ void main()
             {
                 splitter_fraction = gui::splitter_fraction_from_point(options, frame.pointer_position);
             }
+            const gui::SliderLayoutOptions value_options{
+                .bounds = {{620.0f, 398.0f}, {270.0f, 28.0f}}, .value = demo_value,
+                .thumb_width = 14.0f, .thumb_height = 20.0f};
+            if (frame.pointer(input::PointerButton::left).down
+                && gui::contains(value_options.bounds, frame.pointer_position))
+                demo_value = gui::slider_value_from_position(value_options, frame.pointer_position.x);
+            if (frame.pointer(input::PointerButton::left).released
+                && gui::contains({{940.0f, 398.0f}, {52.0f, 26.0f}}, frame.pointer_position))
+                show_tips = !show_tips;
 
             const gui::SelectableListLayoutOptions list_options{
                 .viewport = { { 270.0f, 278.0f }, { 280.0f, 190.0f } },
@@ -945,162 +1101,150 @@ void main()
                 });
         }
 
-        [[nodiscard]] std::size_t caret_from_point(
-            const gui::TextControlState& state,
-            gui::Rect rect,
-            gui::Vec2 point,
-            float scale) const noexcept
+        [[nodiscard]] static gui::Rect text_rect(std::uint32_t id) noexcept
         {
-            const std::size_t column = static_cast<std::size_t>((std::max)(0.0f, point.x - rect.position.x - 10.0f) / (scale * 6.0f));
-            std::size_t line = static_cast<std::size_t>((std::max)(0.0f, point.y - rect.position.y - 10.0f) / (scale * 9.0f));
-            std::size_t index{};
-            while (line > 0 && index < state.text.size())
-            {
-                if (state.text[index++] == '\n')
-                    --line;
-            }
-            std::size_t advanced{};
-            while (index < state.text.size() && state.text[index] != '\n' && advanced < column)
-            {
-                ++index;
-                ++advanced;
-            }
-            return index;
+            if (id == 1) return {{270.0f, 210.0f}, {430.0f, 48.0f}};
+            if (id == 2) return {{270.0f, 316.0f}, {430.0f, 190.0f}};
+            return {{744.0f, 210.0f}, {440.0f, 296.0f}};
         }
 
-        [[nodiscard]] gui::TextControlMetrics text_metrics(
-            const gui::TextControlState& state,
-            float scale) const noexcept
+        [[nodiscard]] static gui::TextControlOptions text_options(std::uint32_t id) noexcept
         {
-            std::size_t line{};
-            std::size_t column{};
-            std::size_t max_column{};
-            std::size_t caret_line{};
-            std::size_t caret_column{};
-            for (std::size_t index = 0; index < state.text.size(); ++index)
-            {
-                if (index == state.caret)
-                {
-                    caret_line = line;
-                    caret_column = column;
-                }
-                if (state.text[index] == '\n')
-                {
-                    max_column = (std::max)(max_column, column);
-                    ++line;
-                    column = 0;
-                }
-                else
-                {
-                    ++column;
-                }
-            }
-            if (state.caret == state.text.size())
-            {
-                caret_line = line;
-                caret_column = column;
-            }
-            max_column = (std::max)(max_column, column);
-            return {
-                .content_size = { static_cast<float>(max_column) * scale * 6.0f, static_cast<float>(line + 1) * scale * 9.0f },
-                .caret_position = { static_cast<float>(caret_column) * scale * 6.0f, static_cast<float>(caret_line) * scale * 9.0f },
-                .caret_size = { 1.0f, scale * 7.0f },
-                .valid = true
-            };
+            return {.viewport_size = text_rect(id).size, .content_padding = {10.0f, 10.0f},
+                .maximum_bytes = id == 1 ? 256u : 65536u, .multiline = id != 1,
+                .read_only = id == 3, .accept_tab = id == 2};
         }
 
-        void apply_text_command(
-            gui::TextControlState& state,
-            const gui::TextControlOptions& options,
-            gui::TextControlCommand command,
-            std::string_view text = {},
-            std::size_t caret = gui::invalid_text_index,
-            bool extend = false)
+        [[nodiscard]] gui::TextControlState* focused_text() noexcept
         {
-            (void)gui::update_text_control(state, options, {
-                .command = command,
-                .text = text,
-                .requested_caret = caret,
-                .metrics = text_metrics(state, 1.6f),
-                .extend_selection = extend
-            });
+            return active_text_control == 1 ? &edit_state : active_text_control == 2
+                ? &multiline_state : active_text_control == 3 ? &static_state : nullptr;
+        }
+
+        void apply_text_command(gui::TextControlState& state, const gui::TextControlOptions& options,
+            gui::TextControlCommand command, std::string_view text = {},
+            std::size_t caret = gui::invalid_text_index, bool extend = false)
+        {
+            const auto before = text_view::layout(state, options.viewport_size, 1.6f, options.multiline);
+            const auto result = gui::update_text_control(state, options, {
+                .command = command, .text = text, .requested_caret = caret,
+                .metrics = before.metrics, .extend_selection = extend});
+            if (result.clipboard_write_requested) demo_clipboard = result.clipboard_text;
+            // Insertion changes wrapped rows; reveal the resulting caret using new metrics.
+            const auto after = text_view::layout(state, options.viewport_size, 1.6f, options.multiline);
+            gui::update_text_control_scroll(state, options, after.metrics);
+        }
+
+        [[nodiscard]] std::string edit_command(int command, std::string_view pasted = {})
+        {
+            auto* active = focused_text();
+            if (!active) return {};
+            constexpr std::array<gui::TextControlCommand, 6> commands{
+                gui::TextControlCommand::select_all, gui::TextControlCommand::copy_selection,
+                gui::TextControlCommand::cut_selection, gui::TextControlCommand::paste_text,
+                gui::TextControlCommand::undo, gui::TextControlCommand::redo};
+            if (command < 0 || static_cast<std::size_t>(command) >= commands.size()) return {};
+            const std::string copied = command == 1 || command == 2 ? gui::selected_text(*active) : std::string{};
+            if ((command == 1 || command == 2) && clipboard_write && !copied.empty()
+                && !clipboard_write(clipboard_user, copied.c_str()))
+            {
+                edit_status = "CLIPBOARD UNAVAILABLE. YOUR TEXT HAS NOT BEEN CUT.";
+                return {};
+            }
+            std::string paste_copy;
+            if (command == 3 && pasted.empty())
+            {
+                if (clipboard_read)
+                {
+                    const char* source = clipboard_read(clipboard_user);
+                    if (!source) { edit_status = "CLIPBOARD HAS NO READABLE TEXT."; return {}; }
+                    paste_copy = source;
+                }
+                else paste_copy = demo_clipboard;
+                pasted = paste_copy;
+            }
+            apply_text_command(*active, text_options(active_text_control), commands[command], pasted);
+            edit_status = command == 3 ? "PASTED TEXT WRAPS AND SCROLLS INSIDE THE FIELD."
+                : command == 1 || command == 2 ? "SELECTION COPIED. TRY PASTE IN ANOTHER FIELD."
+                : "TEXT CONTROLLER UPDATED.";
+            return copied;
         }
 
         void update_text_page(const input::InputFrame& frame)
         {
-            const gui::Rect single_rect{ { 270.0f, 210.0f }, { 430.0f, 48.0f } };
-            const gui::Rect multi_rect{ { 270.0f, 316.0f }, { 430.0f, 190.0f } };
-            const gui::TextControlOptions single_options{
-                .viewport_size = single_rect.size,
-                .content_padding = { 10.0f, 10.0f },
-                .maximum_bytes = 128,
-                .multiline = false,
-                .read_only = false,
-                .accept_tab = false
-            };
-            const gui::TextControlOptions multi_options{
-                .viewport_size = multi_rect.size,
-                .content_padding = { 10.0f, 10.0f },
-                .maximum_bytes = 1024,
-                .multiline = true,
-                .read_only = false,
-                .accept_tab = true
-            };
-
-            if (frame.pointer(input::PointerButton::left).released)
+            const auto& left = frame.pointer(input::PointerButton::left);
+            if (left.pressed)
             {
-                if (gui::contains(single_rect, frame.pointer_position))
+                bool hit{};
+                for (std::uint32_t id = 1; id <= 3; ++id)
                 {
-                    active_text_control = 1;
-                    edit_state.focused = true;
-                    multiline_state.focused = false;
-                    apply_text_command(edit_state, single_options, gui::TextControlCommand::set_caret, {}, caret_from_point(edit_state, single_rect, frame.pointer_position, 1.6f));
+                    const auto rect = text_rect(id);
+                    if (!gui::contains(rect, frame.pointer_position)) continue;
+                    active_text_control = id;
+                    edit_state.focused = id == 1;
+                    multiline_state.focused = id == 2;
+                    static_state.focused = id == 3;
+                    auto& state = *focused_text();
+                    const auto options = text_options(id);
+                    const auto view = text_view::layout(state, options.viewport_size, 1.6f, options.multiline);
+                    const auto caret = text_view::caret_from_point(state, view,
+                        {frame.pointer_position.x - rect.position.x, frame.pointer_position.y - rect.position.y});
+                    apply_text_command(state, options, gui::TextControlCommand::set_caret, {}, caret, frame.modifiers.shift);
+                    text_drag = true;
+                    hit = true;
+                    break;
                 }
-                else if (gui::contains(multi_rect, frame.pointer_position))
-                {
-                    active_text_control = 2;
-                    edit_state.focused = false;
-                    multiline_state.focused = true;
-                    apply_text_command(multiline_state, multi_options, gui::TextControlCommand::set_caret, {}, caret_from_point(multiline_state, multi_rect, frame.pointer_position, 1.6f));
-                }
-                else
+                if (!hit && !gui::contains({{270.0f, 520.0f}, {914.0f, 36.0f}}, frame.pointer_position))
                 {
                     active_text_control = 0;
-                    edit_state.focused = false;
-                    multiline_state.focused = false;
+                    edit_state.focused = multiline_state.focused = static_state.focused = false;
                 }
             }
-
-            gui::TextControlState* active = active_text_control == 1 ? &edit_state : active_text_control == 2 ? &multiline_state : nullptr;
-            const gui::TextControlOptions* options = active_text_control == 1 ? &single_options : active_text_control == 2 ? &multi_options : nullptr;
-            if (!active || !options)
+            for (std::uint32_t id = 1; id <= 3; ++id)
             {
-                pending_text.clear();
-                return;
+                auto& state = id == 1 ? edit_state : id == 2 ? multiline_state : static_state;
+                const auto rect = text_rect(id);
+                if (gui::contains(rect, frame.pointer_position) && frame.wheel_delta.y != 0.0f)
+                {
+                    const auto view = text_view::layout(state, rect.size, 1.6f, id != 1);
+                    text_view::scroll_by(state, view, {0.0f, -frame.wheel_delta.y * view.line_height * 3.0f});
+                }
             }
-
-            if (!pending_text.empty())
-                apply_text_command(*active, *options, gui::TextControlCommand::insert_text, pending_text);
+            auto* active = focused_text();
+            if (!active) { pending_text.clear(); text_drag = false; return; }
+            const auto options = text_options(active_text_control);
+            if (text_drag && left.down && !left.pressed)
+            {
+                const auto rect = text_rect(active_text_control);
+                const auto view = text_view::layout(*active, rect.size, 1.6f, options.multiline);
+                const auto caret = text_view::caret_from_point(*active, view,
+                    {frame.pointer_position.x - rect.position.x, frame.pointer_position.y - rect.position.y});
+                apply_text_command(*active, options, gui::TextControlCommand::set_caret, {}, caret, true);
+            }
+            if (!left.down) text_drag = false;
+            if (!pending_text.empty()) apply_text_command(*active, options, gui::TextControlCommand::insert_text, pending_text);
             pending_text.clear();
-
             const bool extend = frame.modifiers.shift;
-            if (frame.key(input::Key::backspace).pressed) apply_text_command(*active, *options, gui::TextControlCommand::erase_backward);
-            if (frame.key(input::Key::delete_key).pressed) apply_text_command(*active, *options, gui::TextControlCommand::erase_forward);
-            if (frame.key(input::Key::arrow_left).pressed) apply_text_command(*active, *options, gui::TextControlCommand::move_left, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::arrow_right).pressed) apply_text_command(*active, *options, gui::TextControlCommand::move_right, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::arrow_up).pressed) apply_text_command(*active, *options, gui::TextControlCommand::move_up, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::arrow_down).pressed) apply_text_command(*active, *options, gui::TextControlCommand::move_down, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::home).pressed) apply_text_command(*active, *options, gui::TextControlCommand::move_line_start, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::end).pressed) apply_text_command(*active, *options, gui::TextControlCommand::move_line_end, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::enter).pressed)
-            {
-                if (active_text_control == 2)
-                    apply_text_command(*active, *options, gui::TextControlCommand::insert_text, "\n");
-                else
-                    active->focused = false;
-            }
-            if (frame.key(input::Key::tab).pressed && active_text_control == 2)
-                apply_text_command(*active, *options, gui::TextControlCommand::insert_text, "\t");
+            if (frame.key(input::Key::backspace).pressed) apply_text_command(*active, options, gui::TextControlCommand::erase_backward);
+            if (frame.key(input::Key::delete_key).pressed) apply_text_command(*active, options, gui::TextControlCommand::erase_forward);
+            if (frame.key(input::Key::arrow_left).pressed) apply_text_command(*active, options,
+                frame.modifiers.control ? gui::TextControlCommand::move_word_left : gui::TextControlCommand::move_left, {}, gui::invalid_text_index, extend);
+            if (frame.key(input::Key::arrow_right).pressed) apply_text_command(*active, options,
+                frame.modifiers.control ? gui::TextControlCommand::move_word_right : gui::TextControlCommand::move_right, {}, gui::invalid_text_index, extend);
+            if (frame.key(input::Key::arrow_up).pressed) apply_text_command(*active, options, gui::TextControlCommand::move_up, {}, gui::invalid_text_index, extend);
+            if (frame.key(input::Key::arrow_down).pressed) apply_text_command(*active, options, gui::TextControlCommand::move_down, {}, gui::invalid_text_index, extend);
+            if (frame.key(input::Key::home).pressed) apply_text_command(*active, options,
+                frame.modifiers.control ? gui::TextControlCommand::move_document_start : gui::TextControlCommand::move_line_start, {}, gui::invalid_text_index, extend);
+            if (frame.key(input::Key::end).pressed) apply_text_command(*active, options,
+                frame.modifiers.control ? gui::TextControlCommand::move_document_end : gui::TextControlCommand::move_line_end, {}, gui::invalid_text_index, extend);
+            if (frame.key(input::Key::enter).pressed && active_text_control == 2)
+                apply_text_command(*active, options, gui::TextControlCommand::insert_text, "\n");
+            if (frame.key(input::Key::tab).pressed && active_text_control == 2 && !frame.modifiers.control)
+                apply_text_command(*active, options, gui::TextControlCommand::insert_text, "\t");
+            if (left.released)
+                for (int command = 0; command < 6; ++command)
+                    if (gui::contains({{270.0f + command * 152.0f, 520.0f}, {144.0f, 32.0f}}, frame.pointer_position))
+                        (void)edit_command(command);
         }
 
         void update_image_page(const input::InputFrame& frame) noexcept
@@ -1115,14 +1259,23 @@ void main()
 
         void apply_context_action(std::uint32_t item) noexcept
         {
+            if (context_text)
+            {
+                (void)edit_command(static_cast<int>(item));
+                context_popup.open = false;
+                context_layout.visible = false;
+                return;
+            }
             switch (item)
             {
             case 0:
+                page = 1;
                 core_window.open = true;
                 core_window.position = { context_anchor.x, (std::max)(workspace_top + 8.0f, context_anchor.y) };
                 core_window.focus_order = next_focus_order++;
                 break;
             case 1:
+                page = 1;
                 rounded_window.open = true;
                 rounded_window.position = { context_anchor.x, (std::max)(workspace_top + 8.0f, context_anchor.y) };
                 rounded_window.focus_order = next_focus_order++;
@@ -1146,10 +1299,27 @@ void main()
         {
             const input::ContextMenuRequest request = input::context_menu_request(frame, content_area());
             if (request.requested)
+            {
                 context_anchor = request.position;
+                context_text = false;
+                if (page == 0 && showcase_open[1])
+                {
+                    const auto local = section_input(frame, 1);
+                    for (std::uint32_t id = 1; id <= 3; ++id)
+                        if (gui::contains(text_rect(id), local.pointer_position))
+                        {
+                            context_text = true;
+                            active_text_control = id;
+                            edit_state.focused = id == 1;
+                            multiline_state.focused = id == 2;
+                            static_state.focused = id == 3;
+                        }
+                }
+            }
+            const std::uint32_t count = context_text ? 6u : EPOCHGUI_DEMO_PLATFORM_HOSTED ? 3u : 4u;
             const gui::PopupOptions options{
                 .owner = { context_anchor, { 1.0f, 1.0f } },
-                .preferred_size = { 248.0f, 166.0f },
+                .preferred_size = { 248.0f, static_cast<float>(count) * 36.0f + 20.0f },
                 .viewport_size = { canvas_width, canvas_height },
                 .cursor_offset = { 0.0f, 0.0f },
                 .placement = gui::PopupPlacement::below,
@@ -1162,7 +1332,7 @@ void main()
             context_layout = gui::update_popup(context_popup, options, input::popup_input(frame, request.requested));
             if (context_layout.visible && frame.pointer(input::PointerButton::left).released)
             {
-                for (std::uint32_t item = 0; item < 4; ++item)
+                for (std::uint32_t item = 0; item < count; ++item)
                 {
                     const gui::Rect item_rect{
                         { context_layout.popup.position.x + 10.0f, context_layout.popup.position.y + 10.0f + static_cast<float>(item) * 36.0f },
@@ -1183,13 +1353,16 @@ void main()
             const input::WindowCommand command = input::borderless_window_command(chrome_layout, frame);
             if (command != input::WindowCommand::none)
                 pending_window_command = command;
+            const bool menu_was_open = context_popup.open;
+            update_context_menu(frame);
+            if (context_popup.open || (menu_was_open && frame.pointer(input::PointerButton::left).released))
+                return;
             update_navigation(frame);
             update_frame_toggle(frame);
-            update_context_menu(frame);
 
             switch (page)
             {
-            case 0: update_overview(frame); break;
+            case 0: update_showcase(frame); break;
             case 1: update_windows_page(frame); break;
             case 2: update_text_page(frame); break;
             case 3: update_image_page(frame); break;
@@ -1200,16 +1373,34 @@ void main()
 
             if (frame.key(input::Key::escape).pressed && context_popup.open)
                 context_popup.open = false;
-            else if (frame.key(input::Key::tab).pressed && active_text_control == 0)
-                page = (page + 1U) % 5U;
+            else if (frame.key(input::Key::tab).pressed && frame.modifiers.control)
+            {
+                constexpr std::array<std::uint32_t, 3> pages{0, 1, 5};
+                const auto current = std::find(pages.begin(), pages.end(), page);
+                const std::size_t index = current == pages.end() ? 0u : static_cast<std::size_t>(current - pages.begin());
+                page = pages[(index + (frame.modifiers.shift ? 2u : 1u)) % pages.size()];
+                active_text_control = 0;
+                edit_state.focused = multiline_state.focused = static_state.focused = false;
+            }
+            else if (page == 0 && frame.key(input::Key::tab).pressed && active_text_control != 2)
+            {
+                active_text_control = active_text_control == 0 ? 1
+                    : frame.modifiers.shift ? (active_text_control == 1 ? 3 : active_text_control - 1)
+                    : (active_text_control == 3 ? 1 : active_text_control + 1);
+                showcase_open[1] = true;
+                showcase_scroll += section_header(1).position.y - showcase_viewport().position.y;
+                edit_state.focused = active_text_control == 1;
+                multiline_state.focused = active_text_control == 2;
+                static_state.focused = active_text_control == 3;
+            }
         }
 
         void draw_custom_title_bar(const input::InputFrame& frame)
         {
             batch.append_rect(chrome_layout.title_bar, title_fill);
             batch.append_rect({ { 0.0f, custom_title_height - 1.0f }, { canvas_width, 1.0f } }, panel_border);
-            draw_text(batch, 20.0f, 18.0f, "EPOCHGUI COMPLETE DEMO", 2.15f, text_primary);
-            draw_text(batch, 360.0f, 21.0f, "CUSTOM TITLE BAR ALWAYS ENABLED", 1.35f, text_secondary);
+            draw_text(batch, 20.0f, 18.0f, "EPOCHGUI SHOWCASE", 2.15f, text_primary);
+            draw_text(batch, 360.0f, 21.0f, "LIVE WIDGETS - WINDOWS - LIBRARIES", 1.35f, text_secondary);
 
             const input::WindowChromeRegion hovered = input::hit_test_borderless_window_chrome(chrome_layout, frame.pointer_position);
             const auto draw_button = [&](gui::Rect rect, input::WindowChromeRegion region, Color active, std::string_view label)
@@ -1228,8 +1419,9 @@ void main()
         {
             batch.append_rect({ { 0.0f, custom_title_height }, { canvas_width, toolbar_height } }, toolbar_fill);
             batch.append_rect({ { 0.0f, workspace_top - 1.0f }, { canvas_width, 1.0f } }, panel_border);
-            constexpr std::array<float, 6> widths{ 106.0f,106.0f,106.0f,106.0f,106.0f,116.0f };
-            constexpr std::array<std::string_view, 6> labels{ "OVERVIEW","WINDOWS","TEXT","IMAGE","INPUT","LIBRARIES" };
+            constexpr std::array<float, 3> widths{ 150.0f,174.0f,160.0f };
+            constexpr std::array<std::string_view, 3> labels{ "WIDGETS","WINDOWS / DOCKS","LIBRARIES" };
+            constexpr std::array<std::uint32_t, 3> pages{0, 1, 5};
             const gui::SegmentedControlLayoutOptions options{
                 .position = { 22.0f, 67.0f },
                 .item_widths = widths,
@@ -1240,7 +1432,7 @@ void main()
             {
                 const gui::Rect item = gui::segmented_control_item_layout(options, index);
                 const bool hovered = gui::contains(item, frame.pointer_position);
-                const bool selected = page == index;
+                const bool selected = page == pages[index];
                 draw_surface(batch, item, true, 7.0f,
                     selected ? control_selected : hovered ? control_hover : control_fill,
                     selected ? accent : panel_border,
@@ -1264,25 +1456,27 @@ void main()
 
         void draw_sidebar()
         {
-            batch.append_rect({ { 0.0f, workspace_top }, { sidebar_width, canvas_height - workspace_top } }, sidebar_fill);
-            batch.append_rect({ { sidebar_width - 1.0f, workspace_top }, { 1.0f, canvas_height - workspace_top } }, panel_border);
-            draw_text(batch, 18.0f, 138.0f, "PUBLIC API", 1.55f, text_primary);
-            constexpr std::array<std::string_view, 13> labels{
-                "RECT AND VEC2", "SPLITTER", "PROGRESS", "LOADING", "SELECTABLE",
-                "SEGMENTED", "POPUP", "FLOATING", "DOCK LAYOUT", "DOCKABLE",
-                "TEXT CONTROL", "PANEL HOST", "OPTIONAL MODULES"
-            };
-            float y = 174.0f;
-            for (const std::string_view label : labels)
+            batch.append_rect({{0.0f, workspace_top}, {sidebar_width, canvas_height - workspace_top}}, sidebar_fill);
+            batch.append_rect({{sidebar_width - 1.0f, workspace_top}, {1.0f, canvas_height - workspace_top}}, panel_border);
+            draw_text(batch, 18.0f, 140.0f, "EXPLORE", 1.6f, text_primary);
+            constexpr std::array<std::string_view, 4> sections{"CONTROLS", "TEXT EDITING", "IMAGES", "INPUT"};
+            for (std::size_t index = 0; index < sections.size(); ++index)
             {
-                draw_text(batch, 18.0f, y, label, 1.12f, text_secondary);
-                y += 28.0f;
+                const gui::Rect button{{14.0f, 180.0f + static_cast<float>(index) * 52.0f}, {186.0f, 42.0f}};
+                draw_surface(batch, button, true, 6.0f, page == 0 && showcase_open[index] ? control_selected : control_fill,
+                    panel_border, 1.0f);
+                draw_text(batch, button.position.x + 12.0f, button.position.y + 15.0f, sections[index], 1.2f, text_primary);
             }
-            draw_text(batch, 18.0f, 572.0f, "RIGHT CLICK", 1.25f, warning);
-            draw_text(batch, 18.0f, 594.0f, "FOR CONTEXT MENU", 1.15f, text_muted);
-            draw_text(batch, 18.0f, 640.0f, "INPUT FALLBACK", 1.25f, green);
-            draw_text(batch, 18.0f, 662.0f, "ENABLED IN DEMO", 1.15f, text_muted);
+            draw_text(batch, 18.0f, 430.0f, "ONE SHOWCASE", 1.3f, accent);
+            draw_text(batch, 18.0f, 458.0f, "SCROLL TO EXPLORE.", 1.1f, text_secondary);
+            draw_text(batch, 18.0f, 482.0f, "CLICK A HEADING", 1.1f, text_secondary);
+            draw_text(batch, 18.0f, 506.0f, "TO FOLD A SECTION.", 1.1f, text_secondary);
+            draw_text(batch, 18.0f, 566.0f, "WINDOWS / DOCKS", 1.15f, warning);
+            draw_text(batch, 18.0f, 592.0f, "DRAG, RESIZE AND", 1.1f, text_secondary);
+            draw_text(batch, 18.0f, 616.0f, "REARRANGE PANELS.", 1.1f, text_secondary);
             draw_text(batch, 18.0f, 706.0f, "EPOCHGUI " + std::string(gui::version_string), 1.15f, accent);
+            draw_text(batch, 18.0f, 744.0f, "CTRL + TAB", 1.05f, text_muted);
+            draw_text(batch, 18.0f, 766.0f, "CHANGES WORKSPACE", 1.05f, text_muted);
         }
 
         void draw_overview(const input::InputFrame& frame)
@@ -1333,7 +1527,7 @@ void main()
                 };
                 const gui::ProgressBarLayout progress = gui::make_progress_bar_layout({
                     .track = track,
-                    .value = 0.68f,
+                    .value = demo_value,
                     .minimum = 0.0f,
                     .maximum = 1.0f,
                     .padding = 3.0f,
@@ -1342,6 +1536,18 @@ void main()
                 draw_surface(batch, progress.track, true, 8.0f, control_fill, panel_border, 1.0f);
                 draw_surface(batch, progress.fill, true, 6.0f, index % 2 == 0 ? accent : green, panel_border, 0.0f);
             }
+
+            const auto value_slider = gui::make_slider_layout({
+                .bounds = {{620.0f, 398.0f}, {270.0f, 28.0f}}, .value = demo_value,
+                .thumb_width = 14.0f, .thumb_height = 20.0f});
+            batch.append_rect(value_slider.track, control_fill);
+            batch.append_rect(value_slider.fill, accent);
+            draw_surface(batch, value_slider.thumb, true, 5.0f, text_primary, accent, 1.0f);
+            const auto help_toggle = gui::make_toggle_switch_layout({
+                .bounds = {{940.0f, 398.0f}, {52.0f, 26.0f}}, .value = show_tips});
+            draw_surface(batch, help_toggle.track, true, 12.0f, show_tips ? accent : control_fill, panel_border, 1.0f);
+            draw_surface(batch, help_toggle.thumb, true, 10.0f, text_primary, text_primary, 0.0f);
+            draw_text(batch, 1008.0f, 406.0f, "SHOW TIPS", 1.1f, text_secondary);
 
             const gui::LoadingScreenLayout loading = gui::make_loading_screen_layout({
                 .viewport = { { 620.0f, 430.0f }, { 570.0f, 150.0f } },
@@ -1356,13 +1562,13 @@ void main()
                 .status_height = 14.0f,
                 .action_height = 24.0f,
                 .progress_padding = 2.0f,
-                .progress_value = 0.64f
+                .progress_value = demo_value
             });
             draw_surface(batch, loading.panel, true, 12.0f, panel_fill, panel_border, 1.0f);
             draw_text(batch, loading.title.position.x, loading.title.position.y + 2.0f, "LOADING SCREEN LAYOUT", 1.35f, text_primary);
             draw_surface(batch, loading.progress.track, true, 6.0f, background, panel_border, 1.0f);
             draw_surface(batch, loading.progress.fill, true, 5.0f, green, green, 0.0f);
-            draw_text(batch, loading.status.position.x, loading.status.position.y + 1.0f, "64 PERCENT", 1.15f, text_secondary);
+            draw_text(batch, loading.status.position.x, loading.status.position.y + 1.0f, std::to_string(static_cast<int>(demo_value * 100.0f)) + " PERCENT", 1.15f, text_secondary);
 
             const gui::SplitterLayoutOptions split_options{
                 .area = { { 250.0f, 610.0f }, { 940.0f, 142.0f } },
@@ -1376,8 +1582,11 @@ void main()
             draw_surface(batch, split.before, true, 9.0f, panel_fill, panel_border, 1.0f);
             draw_surface(batch, split.after, true, 9.0f, control_fill, panel_border, 1.0f);
             draw_surface(batch, split.handle, true, 4.0f, accent, accent, 0.0f);
-            draw_text(batch, split.before.position.x + 20.0f, split.before.position.y + 20.0f, "DRAG SPLITTER", 1.4f, text_secondary);
-            draw_text(batch, split.after.position.x + 20.0f, split.after.position.y + 20.0f, "AFTER PANE", 1.4f, text_secondary);
+            if (show_tips)
+            {
+                draw_text(batch, split.before.position.x + 20.0f, split.before.position.y + 20.0f, "DRAG SPLITTER", 1.4f, text_secondary);
+                draw_text(batch, split.after.position.x + 20.0f, split.after.position.y + 20.0f, "AFTER PANE", 1.4f, text_secondary);
+            }
         }
 
         void draw_floating_window(
@@ -1394,9 +1603,10 @@ void main()
             draw_text(batch, layout.title_bar.position.x + 12.0f, layout.title_bar.position.y + 10.0f,
                 rounded_surface ? "ROUNDED FLOATING WINDOW" : "CORE FLOATING WINDOW",
                 1.25f,
-                text_primary);
+                text_primary, (std::max)(0.0f, layout.title_bar.size.x - 62.0f));
             draw_surface(batch, layout.close_button, true, 6.0f, layout.close_hovered ? danger : warning, danger, 0.0f);
             draw_text(batch, layout.close_button.position.x + 8.0f, layout.close_button.position.y + 7.0f, "X", 1.1f, background);
+            ClipScope floating_content_clip{batch, layout.content};
             draw_text(batch, layout.content.position.x + 10.0f, layout.content.position.y + 12.0f,
                 "DRAG TITLE - RESIZE CORNER - CLOSE WORKS",
                 1.1f,
@@ -1504,16 +1714,51 @@ void main()
                 state.focused ? control_hover : panel_fill,
                 state.focused ? accent : panel_border,
                 state.focused ? 2.0f : 1.0f);
-            draw_text(batch, rect.position.x + 10.0f, rect.position.y + 11.0f, state.text, 1.6f,
-                read_only ? text_muted : text_primary,
-                rect.size.x - 20.0f);
+            const auto view = text_view::layout(state, rect.size, 1.6f, rect.size.y > 60.0f);
+            ClipScope text_clip{batch, inset(rect, 5.0f)};
+            if (state.focused)
+                for (auto selected : text_view::selection_rectangles(state, view))
+                {
+                    selected.position.x += rect.position.x;
+                    selected.position.y += rect.position.y;
+                    batch.append_rect(selected, control_selected);
+                }
+            for (std::size_t row = 0; row < view.lines.size(); ++row)
+            {
+                const float y = rect.position.y + view.text_origin.y + static_cast<float>(row) * view.line_height;
+                if (y + view.line_height < rect.position.y || y > rect.position.y + rect.size.y) continue;
+                float x = rect.position.x + view.text_origin.x;
+                const auto& line = view.lines[row];
+                for (std::size_t index = line.first; index < line.past_last;)
+                {
+                    const auto glyph = text_view::glyph(state.text, index, view.scale);
+                    const auto byte = static_cast<unsigned char>(state.text[index]);
+                    if (byte != '\t' && byte != '\n' && byte != '\r')
+                    {
+                        const char character = byte < 128 ? static_cast<char>(byte) : '?';
+                        draw_text(batch, x, y, std::string_view{&character, 1}, view.scale,
+                            read_only ? text_secondary : text_primary);
+                    }
+                    x += glyph.advance;
+                    index += glyph.byte_count;
+                }
+            }
             if (state.focused && !read_only)
             {
-                const gui::TextControlMetrics metrics = text_metrics(state, 1.6f);
                 batch.append_rect({
-                    { rect.position.x + 10.0f + metrics.caret_position.x, rect.position.y + 10.0f + metrics.caret_position.y },
-                    { 2.0f, 12.0f }
+                    {rect.position.x + view.text_origin.x + view.metrics.caret_position.x,
+                     rect.position.y + view.text_origin.y + view.metrics.caret_position.y},
+                    {2.0f, view.metrics.caret_size.y}
                 }, accent);
+            }
+            if (view.maximum_scroll.y > 0.0f)
+            {
+                const auto scroll = gui::make_scrollbar_layout({
+                    .track = {{rect.position.x + rect.size.x - 8.0f, rect.position.y + 6.0f}, {3.0f, rect.size.y - 12.0f}},
+                    .content_extent = view.metrics.content_size.y + 8.0f,
+                    .scroll_offset = state.scroll.y, .minimum_thumb_extent = 14.0f});
+                batch.append_rect(scroll.track, background);
+                batch.append_rect(scroll.thumb, accent);
             }
         }
 
@@ -1521,15 +1766,23 @@ void main()
         {
             draw_text(batch, 246.0f, 140.0f, "TEXT CONTROLS", 1.8f, text_primary);
             draw_text(batch, 246.0f, 168.0f, "EDIT BOX - MULTILINE EDITOR - READ ONLY STATIC TEXT", 1.2f, text_muted);
-            draw_text_control({ { 270.0f, 210.0f }, { 430.0f, 48.0f } }, edit_state, false, "SINGLE LINE EDIT BOX");
-            draw_text_control({ { 270.0f, 316.0f }, { 430.0f, 190.0f } }, multiline_state, false, "MULTILINE TEXT CONTROL");
-            draw_text_control({ { 744.0f, 210.0f }, { 440.0f, 296.0f } }, static_state, true, "STATIC TEXT - READ ONLY TEXT CONTROL");
+            draw_text_control(text_rect(1), edit_state, false, "PROJECT NAME");
+            draw_text_control(text_rect(2), multiline_state, false, "NOTES - WRAPS AND SCROLLS");
+            draw_text_control(text_rect(3), static_state, true, "READ ONLY - SELECT AND COPY");
+            constexpr std::array<std::string_view, 6> edit_labels{"SELECT ALL", "COPY", "CUT", "PASTE", "UNDO", "REDO"};
+            for (std::size_t command = 0; command < edit_labels.size(); ++command)
+            {
+                const gui::Rect button{{270.0f + static_cast<float>(command) * 152.0f, 520.0f}, {144.0f, 32.0f}};
+                draw_surface(batch, button, true, 6.0f, control_fill, panel_border, 1.0f);
+                draw_text(batch, button.position.x + 12.0f, button.position.y + 11.0f,
+                    edit_labels[command], 1.2f, active_text_control ? text_primary : text_muted);
+            }
 
             draw_surface(batch, { { 270.0f, 554.0f }, { 914.0f, 150.0f } }, true, 12.0f, panel_fill, panel_border, 1.0f);
-            draw_text(batch, 294.0f, 580.0f, "SUPPORTED COMMANDS", 1.45f, text_primary);
-            draw_text(batch, 294.0f, 614.0f, "CARET - SELECTION - WORD AND LINE MOVEMENT - INSERT - DELETE", 1.2f, text_secondary);
-            draw_text(batch, 294.0f, 640.0f, "COPY CUT PASTE API - SCROLL STATE - READ ONLY - MAXIMUM BYTES", 1.2f, text_secondary);
-            draw_text(batch, 294.0f, 670.0f, "CLICK A FIELD AND TYPE USING NATIVE TEXT EVENTS", 1.2f, green);
+            draw_text(batch, 294.0f, 580.0f, "TRY IT", 1.45f, text_primary);
+            draw_text(batch, 294.0f, 614.0f, "DRAG TO SELECT. SHIFT + ARROWS EXTENDS THE SELECTION.", 1.2f, text_secondary);
+            draw_text(batch, 294.0f, 640.0f, "WINDOWS: CTRL + A / C / X / V / Z / Y USES YOUR CLIPBOARD.", 1.2f, text_secondary);
+            draw_text(batch, 294.0f, 670.0f, edit_status, 1.2f, green, 870.0f);
         }
 
         void draw_image_page(const input::InputFrame& frame)
@@ -1583,7 +1836,7 @@ void main()
             draw_text(batch, 294.0f, 416.0f, frame.modifiers.control ? "CONTROL ON" : "CONTROL OFF", 1.25f, text_muted);
             draw_text(batch, 294.0f, 442.0f, frame.modifiers.alt ? "ALT ON" : "ALT OFF", 1.25f, text_muted);
             draw_text(batch, 294.0f, 492.0f, "RIGHT CLICK OPENS POPUP", 1.2f, green);
-            draw_text(batch, 294.0f, 520.0f, "TAB CHANGES PAGE", 1.2f, text_secondary);
+            draw_text(batch, 294.0f, 520.0f, "CTRL + TAB CHANGES WORKSPACE", 1.2f, text_secondary);
 
             draw_surface(batch, { { 742.0f, 210.0f }, { 448.0f, 360.0f } }, true, 12.0f, panel_fill, panel_border, 1.0f);
             draw_text(batch, 766.0f, 238.0f, "CUSTOM TITLE BAR REGIONS", 1.45f, text_primary);
@@ -1607,9 +1860,12 @@ void main()
                 return;
             draw_surface(batch, context_layout.popup, true, 10.0f, panel_fill, accent, 1.5f);
             constexpr std::array<std::string_view, 4> labels{
-                "OPEN CORE WINDOW", "OPEN ROUNDED WINDOW", "RESET ALL STATE", "TOGGLE NATIVE FRAME"
+                "OPEN CORE WINDOW", "OPEN ROUNDED WINDOW", "RESET WINDOWS", "TOGGLE NATIVE FRAME"
             };
-            for (std::uint32_t index = 0; index < labels.size(); ++index)
+            constexpr std::array<std::string_view, 6> edit_labels{"SELECT ALL", "COPY", "CUT", "PASTE", "UNDO", "REDO"};
+            const std::size_t count = context_text ? edit_labels.size() : EPOCHGUI_DEMO_PLATFORM_HOSTED ? 3u : labels.size();
+            ClipScope menu_clip{batch, context_layout.popup};
+            for (std::uint32_t index = 0; index < count; ++index)
             {
                 const gui::Rect item{
                     { context_layout.popup.position.x + 10.0f, context_layout.popup.position.y + 10.0f + static_cast<float>(index) * 36.0f },
@@ -1620,7 +1876,8 @@ void main()
                     hovered ? control_hover : background,
                     hovered ? accent_soft : background,
                     0.0f);
-                draw_text(batch, item.position.x + 10.0f, item.position.y + 10.0f, labels[index], 1.12f,
+                draw_text(batch, item.position.x + 10.0f, item.position.y + 10.0f,
+                    context_text ? edit_labels[index] : labels[index], 1.12f,
                     hovered ? text_primary : text_secondary);
             }
         }
@@ -1670,6 +1927,43 @@ void main()
                 libraries.ready ? green : warning);
         }
 
+        void draw_showcase(const input::InputFrame& frame)
+        {
+            draw_text(batch, 246.0f, 140.0f, "WIDGET SHOWCASE", 1.8f, text_primary);
+            draw_text(batch, 246.0f, 168.0f, "LIVE CONTROLS TOGETHER - FOLD SECTIONS OR USE THE LINKS ON THE LEFT", 1.15f, text_secondary);
+            {
+                ClipScope viewport_clip{batch, showcase_viewport()};
+                constexpr std::array<std::string_view, 4> labels{
+                    "CONTROLS AND LAYOUT", "TEXT EDITING AND SELECTION", "IMAGES AND ASPECT FIT", "INPUT INSPECTOR"};
+                for (std::size_t index = 0; index < showcase_open.size(); ++index)
+                {
+                    const auto header = section_header(index);
+                    draw_surface(batch, header, true, 7.0f,
+                        gui::contains(header, frame.pointer_position) ? control_hover : control_fill, panel_border, 1.0f);
+                    draw_text(batch, header.position.x + 12.0f, header.position.y + 11.0f,
+                        std::string(showcase_open[index] ? "-  " : "+  ") + std::string(labels[index]), 1.35f, text_primary);
+                    if (!showcase_open[index]) continue;
+                    batch.translation.y = header.position.y + 44.0f - 184.0f;
+                    {
+                        ClipScope body_clip{batch, {{234.0f, 184.0f}, {1008.0f, 600.0f}}};
+                        const auto local = section_input(frame, index);
+                        switch (index)
+                        {
+                        case 0: draw_overview(local); break;
+                        case 1: draw_text_page(); break;
+                        case 2: draw_image_page(local); break;
+                        case 3: draw_input_page(local); break;
+                        default: break;
+                        }
+                    }
+                    batch.translation = {};
+                }
+            }
+            const auto scroll = showcase_scrollbar();
+            batch.append_rect(scroll.track, panel_fill);
+            draw_surface(batch, scroll.thumb, true, 5.0f, showcase_scroll_drag ? accent : control_hover, panel_border, 1.0f);
+        }
+
         void build_scene()
         {
             batch.clear();
@@ -1684,7 +1978,7 @@ void main()
 
             switch (page)
             {
-            case 0: draw_overview(frame); break;
+            case 0: draw_showcase(frame); break;
             case 1: draw_windows_page(frame); break;
             case 2: draw_text_page(); break;
             case 3: draw_image_page(frame); break;
@@ -1713,11 +2007,35 @@ void main()
                 static_cast<GLsizeiptr>(batch.vertices.size() * sizeof(gui::Vec2)),
                 batch.vertices.empty() ? nullptr : batch.vertices.data(),
                 GL_DYNAMIC_DRAW);
+            std::optional<gui::Rect> applied_clip{};
             for (const DrawCommand& command : batch.commands)
             {
+                const bool same_clip = command.clip.has_value() == applied_clip.has_value()
+                    && (!command.clip || (command.clip->position.x == applied_clip->position.x
+                        && command.clip->position.y == applied_clip->position.y
+                        && command.clip->size.x == applied_clip->size.x
+                        && command.clip->size.y == applied_clip->size.y));
+                if (!same_clip)
+                {
+                    if (command.clip)
+                    {
+                        const auto clipped = intersection(*command.clip, {{0.0f, 0.0f}, {canvas_width, canvas_height}});
+                        const float sx = static_cast<float>(framebuffer_width) / canvas_width;
+                        const float sy = static_cast<float>(framebuffer_height) / canvas_height;
+                        const int left = static_cast<int>(std::ceil(clipped.position.x * sx));
+                        const int right = static_cast<int>(std::floor((clipped.position.x + clipped.size.x) * sx));
+                        const int top = static_cast<int>(std::ceil(clipped.position.y * sy));
+                        const int bottom = static_cast<int>(std::floor((clipped.position.y + clipped.size.y) * sy));
+                        gl.enable(GL_SCISSOR_TEST);
+                        gl.scissor(left, framebuffer_height - bottom, (std::max)(0, right - left), (std::max)(0, bottom - top));
+                    }
+                    else gl.disable(GL_SCISSOR_TEST);
+                    applied_clip = command.clip;
+                }
                 gl.uniform_4f(color_uniform, command.color.r, command.color.g, command.color.b, command.color.a);
                 gl.draw_arrays(GL_TRIANGLES, command.first, command.count);
             }
+            gl.disable(GL_SCISSOR_TEST);
             input_tracker.finish_frame();
         }
     };
@@ -1778,6 +2096,20 @@ void main()
     {
         if (impl_)
             impl_->pending_text.append(text);
+    }
+
+    std::string OpenGLRenderer::edit_command(int command, std::string_view pasted_text)
+    {
+        return impl_ ? impl_->edit_command(command, pasted_text) : std::string{};
+    }
+
+    void OpenGLRenderer::set_clipboard(const char* (*reader)(void*),
+        bool (*writer)(void*, const char*), void* user) noexcept
+    {
+        if (!impl_) return;
+        impl_->clipboard_read = reader;
+        impl_->clipboard_write = writer;
+        impl_->clipboard_user = user;
     }
 
     void OpenGLRenderer::render() noexcept

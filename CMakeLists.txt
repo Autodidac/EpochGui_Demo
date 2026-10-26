@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(EpochGuiDemo VERSION 0.6.0 LANGUAGES CXX)
+project(EpochGuiDemo VERSION 0.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,8 +18,9 @@ if(EPOCHGUI_ROOT)
     list(APPEND _epochgui_candidates "${EPOCHGUI_ROOT}")
 endif()
 list(APPEND _epochgui_candidates
-    "${CMAKE_CURRENT_SOURCE_DIR}/../EpochGui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/EpochGui"
     "${CMAKE_CURRENT_SOURCE_DIR}/EpochGui"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../EpochGui"
 )
 
 set(_epochgui_resolved_root "")
@@ -88,7 +89,11 @@ foreach(_owner IN LISTS _demo_owners)
     string(TOUPPER "${_owner}" _owner_upper)
     set(EPOCH_${_owner_upper}_ROOT "" CACHE PATH "Path to standalone Epoch${_owner}Engine")
     if(NOT EPOCH_${_owner_upper}_ROOT)
-        set(EPOCH_${_owner_upper}_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../Epoch${_owner}Engine")
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/Epoch${_owner}Engine/CMakeLists.txt")
+            set(EPOCH_${_owner_upper}_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/Epoch${_owner}Engine")
+        else()
+            set(EPOCH_${_owner_upper}_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../Epoch${_owner}Engine")
+        endif()
     endif()
     if(NOT EXISTS "${EPOCH_${_owner_upper}_ROOT}/CMakeLists.txt")
         message(FATAL_ERROR "Set EPOCH_${_owner_upper}_ROOT to a built-source Epoch${_owner}Engine checkout")
@@ -107,7 +112,8 @@ endforeach()
 set(BUILD_TESTING "${_demo_parent_build_testing}")
 add_library(epoch_gui_demo_models STATIC)
 target_sources(epoch_gui_demo_models PUBLIC FILE_SET demo_model_modules TYPE CXX_MODULES
-    BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/modules" FILES modules/gui.library_models.ixx)
+    BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/modules"
+    FILES modules/gui.library_models.ixx modules/gui.text_view.ixx)
 set_target_properties(epoch_gui_demo_models PROPERTIES CXX_SCAN_FOR_MODULES ON)
 target_link_libraries(epoch_gui_demo_models PUBLIC EpochGui)
 foreach(_owner IN LISTS _demo_owners)
@@ -125,11 +131,20 @@ if(BUILD_TESTING)
     set_target_properties(epoch_gui_demo_libraries_contract PROPERTIES CXX_SCAN_FOR_MODULES ON)
     target_link_libraries(epoch_gui_demo_libraries_contract PRIVATE epoch_gui_demo_models)
     add_test(NAME EpochGuiDemo.Libraries COMMAND epoch_gui_demo_libraries_contract)
+    add_executable(epoch_gui_demo_text_view_contract tests/gui.text_view_contract.cpp)
+    set_target_properties(epoch_gui_demo_text_view_contract PROPERTIES CXX_SCAN_FOR_MODULES ON)
+    target_link_libraries(epoch_gui_demo_text_view_contract PRIVATE epoch_gui_demo_models)
+    add_test(NAME EpochGuiDemo.TextView COMMAND epoch_gui_demo_text_view_contract)
     if(WIN32)
         add_executable(epoch_gui_demo_dpi_contract tests/gui.dpi_geometry_contract.cpp)
         target_include_directories(epoch_gui_demo_dpi_contract PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
         target_compile_features(epoch_gui_demo_dpi_contract PRIVATE cxx_std_23)
         add_test(NAME EpochGuiDemo.DpiGeometry COMMAND epoch_gui_demo_dpi_contract)
+        add_executable(epoch_gui_demo_clipboard_contract tests/gui.clipboard_shortcut_contract.cpp)
+        target_include_directories(epoch_gui_demo_clipboard_contract PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        target_compile_features(epoch_gui_demo_clipboard_contract PRIVATE cxx_std_23)
+        target_link_libraries(epoch_gui_demo_clipboard_contract PRIVATE user32 opengl32)
+        add_test(NAME EpochGuiDemo.ClipboardShortcuts COMMAND epoch_gui_demo_clipboard_contract)
     endif()
 endif()
 
@@ -193,6 +208,13 @@ target_include_directories(epoch_gui_demo_renderer PUBLIC
 )
 
 target_link_libraries(epoch_gui_demo_renderer PUBLIC epoch_gui_demo_models)
+
+if(BUILD_TESTING)
+    add_executable(epoch_gui_demo_showcase_contract tests/gui.showcase_contract.cpp)
+    target_link_libraries(epoch_gui_demo_showcase_contract PRIVATE epoch_gui_demo_renderer)
+    add_test(NAME EpochGuiDemo.Showcase COMMAND epoch_gui_demo_showcase_contract)
+    set_tests_properties(EpochGuiDemo.Showcase PROPERTIES TIMEOUT 30)
+endif()
 target_compile_features(epoch_gui_demo_renderer PUBLIC cxx_std_23)
 target_compile_definitions(epoch_gui_demo_renderer PRIVATE EPOCHGUI_DEMO_LIBRARY_PAGE=$<BOOL:${EPOCHGUI_DEMO_LIBRARY_PAGE}> EPOCHGUI_DEMO_PLATFORM_HOSTED=$<STREQUAL:${EPOCHGUI_DEMO_HOST},platform>)
 

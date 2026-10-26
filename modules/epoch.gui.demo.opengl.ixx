@@ -2,6 +2,7 @@ module;
 
 #include <algorithm>
 #include <memory>
+#include <string>
 #include <string_view>
 
 export module epoch.gui.demo.opengl;
@@ -95,6 +96,8 @@ export namespace epochengine::gui_demo
         void key(Key key_code, bool down, bool repeated = false) noexcept;
         void modifiers(input::ModifierState state) noexcept;
         void text_input(std::string_view text);
+        [[nodiscard]] std::string edit_command(int command, std::string_view pasted_text = {});
+        void set_clipboard(const char* (*reader)(void*), bool (*writer)(void*, const char*), void* user) noexcept;
         void render() noexcept;
 
         [[nodiscard]] WindowChromeRegion window_chrome_hit_test(float x, float y) const noexcept;
