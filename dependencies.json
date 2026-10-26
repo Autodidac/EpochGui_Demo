@@ -1,11 +1,11 @@
 {
   "schema": "epoch.source_distribution.v1",
   "source_revisions": {
-    "Gui": "f83b2f15385598b8efbb028a6f391ca637e07634",
-    "Platform": "c1b20ea9bf80fb213b5499a8857a9a0066db5ccd",
-    "Audio": "89d151605830883e0d00723fa478b348e742e638",
-    "Media": "4dbb222aab13624cf53d699453e00e4db26cb8d9"
+    "Gui": "7d5d5514a1443c0ef340a626fa163569858ca362",
+    "Platform": "7190bf71ef3e8ecde4113efcda5804ce41fc023d",
+    "Audio": "980ebd3304f7e5cfc97e48c1e093ea1fc2107760",
+    "Media": "47ae75acf1e2ff04af9852f7c80a28d26ef145f0"
   },
   "release_ready": false,
-  "note": "Exact published source revisions; Platform hosted Windows/Linux Debug/Release checks passed; Demo hosted CI and native acceptance remain pending. Binary/release publication is gated."
+  "note": "Exact reviewed public dependency sources for 0.7.0. New source/archive/native acceptance is pending; no earlier binary acceptance is reused."
 }

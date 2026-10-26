@@ -8,3 +8,5 @@ CMakeUserPresets.json
 /.ci-tools/
 /source-audit.json
 /dependencies/
+__pycache__/
+*.pyc

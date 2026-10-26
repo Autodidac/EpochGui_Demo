@@ -1,235 +1,100 @@
-name: EpochGui Demo Release
-
+name: Windows demonstration candidate
 on:
   workflow_dispatch:
-    inputs:
-      release_authorized:
-        description: Publish a new accepted tag after source and runtime approval
-        type: boolean
-        required: true
-        default: false
-
 permissions:
-  contents: write
-  issues: write
-
+  contents: read
 concurrency:
-  group: epochgui-demo-windows-${{ github.ref }}
+  group: demo-windows-candidate-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
-  windows:
-    if: inputs.release_authorized && startsWith(github.ref, 'refs/tags/v')
-    name: Windows x64 MSVC
+  candidate:
     runs-on: windows-2022
-
+    timeout-minutes: 90
     steps:
-      - name: Check out EpochGui demo
-        uses: actions/checkout@v4
-
-      - name: Require accepted release graph
-        shell: bash
-        run: python -c "import json; assert json.load(open('dependencies.json'))['release_ready'] is True, 'Release graph has not been accepted'"
-
-      - name: Check out EpochGui
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve exact public dependency graph
+        id: pins
+        run: python .github/dependency_pins.py full
+      - uses: actions/checkout@v5
         with:
           repository: Autodidac/EpochGui
-          ref: f83b2f15385598b8efbb028a6f391ca637e07634
-          path: EpochGui
-
-      - name: Configure
-        shell: pwsh
-        run: >-
-          cmake -S . -B build
-          -G "Visual Studio 17 2022"
-          -A x64
-          -DBUILD_TESTING=ON
-          -DEPOCHGUI_ENABLE_ROUNDED_RECT=ON
-          -DEPOCHGUI_ENABLE_INPUT=ON
-          -DEPOCHGUI_ROOT="${{ github.workspace }}/EpochGui"
-
-      - name: Build
-        shell: pwsh
-        run: |
-          cmake --build build --config Release --parallel 2>&1 |
-            Tee-Object -FilePath build-output.log
-          if ($LASTEXITCODE -ne 0) {
-              exit $LASTEXITCODE
-          }
-
-      - name: Run EpochGui tests
-        shell: pwsh
-        run: |
-          ctest --test-dir build -C Release --output-on-failure 2>&1 |
-            Tee-Object -FilePath test-output.log
-          if ($LASTEXITCODE -ne 0) {
-              exit $LASTEXITCODE
-          }
-
-      - name: Publish CI diagnostic issue
-        if: failure()
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $version = (Get-Content VERSION -Raw).Trim()
-          $title = "EpochGui Demo CI diagnostic v$version"
-          $bodyPath = Join-Path $env:GITHUB_WORKSPACE 'ci-diagnostic.md'
-          $sections = @(
-              "Automated Windows build diagnostic for commit ``$env:GITHUB_SHA``.",
-              "This issue is reused and will be closed after the release succeeds."
-          )
-
-          foreach ($entry in @(
-              @{ Name = 'Build'; Path = 'build-output.log' },
-              @{ Name = 'Tests'; Path = 'test-output.log' }
-          )) {
-              if (Test-Path $entry.Path) {
-                  $tail = Get-Content $entry.Path -Tail 180
-                  $sections += "### $($entry.Name)`n``````text`n$($tail -join "`n")`n``````"
-              }
-          }
-
-          $sections -join "`n`n" | Set-Content $bodyPath -Encoding utf8
-
-          $existing = gh issue list `
-              --state open `
-              --search 'EpochGui Demo CI diagnostic in:title' `
-              --json number `
-              --jq '.[0].number'
-
-          if ($existing) {
-              gh issue edit $existing --title $title --body-file $bodyPath
-          }
-          else {
-              gh issue create --title $title --body-file $bodyPath
-          }
-
-      - name: Package complete demo ZIP
-        shell: pwsh
-        run: |
-          $version = (Get-Content VERSION -Raw).Trim()
-          if ($version -notmatch '^\d+\.\d+\.\d+$') {
-              throw 'VERSION must contain major.minor.patch'
-          }
-
-          $source = Join-Path $env:GITHUB_WORKSPACE 'build\Release\EpochGuiDemo.exe'
-          if (-not (Test-Path $source)) {
-              throw "Expected application was not built: $source"
-          }
-
-          $asset = Join-Path $env:GITHUB_WORKSPACE 'assets\epochgui_demo.ppm'
-          if (-not (Test-Path $asset)) {
-              throw "Expected image asset is missing: $asset"
-          }
-
-          $stageName = "EpochGui_Demo-v$version-windows-x64"
-          $stage = Join-Path $env:RUNNER_TEMP $stageName
-          $stageAssets = Join-Path $stage 'assets'
-          $zip = Join-Path $env:GITHUB_WORKSPACE "$stageName.zip"
-          $checksum = "$zip.sha256"
-          $verify = Join-Path $env:RUNNER_TEMP "$stageName-verify"
-
-          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item $verify -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item $zip -Force -ErrorAction SilentlyContinue
-          Remove-Item $checksum -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Path $stageAssets -Force | Out-Null
-
-          Copy-Item $source (Join-Path $stage 'EpochGuiDemo.exe')
-          Copy-Item README.md, LICENSE $stage
-          Copy-Item $asset (Join-Path $stageAssets 'epochgui_demo.ppm')
-
-          @(
-              "EpochGui Demo v$version"
-              "Commit: $env:GITHUB_SHA"
-              'Platform: Windows x64'
-              'Compiler: MSVC'
-              'Renderer: OpenGL 3.2 core through native Win32/WGL'
-              'Library: Autodidac/EpochGui'
-              'Coverage: every currently exported EpochGui subsystem'
-              'Features: floating windows, docking, dockable windows, panel hosting, popups, text controls, static text, image loading/display, progress, captured splitters, lists and segmented controls'
-              'Input: optional EpochGui fallback enabled only for this standalone demo'
-              'Window chrome: custom EpochGui title bar always visible; current Windows theme restored when native frame is re-enabled'
-              'Responsiveness: pointer and resize events are coalesced before OpenGL rendering'
-              'Icon: embedded EpochGui Demo application icon'
-              'Linux: the follow-up Linux workflow attaches a matching x64 tar.gz to this release'
-              'Contents: one user-facing executable plus the demo image asset'
-          ) | Set-Content -Path (Join-Path $stage 'BUILD.txt') -Encoding utf8
-
-          $stagedExecutables = @(Get-ChildItem $stage -Filter '*.exe' -File)
-          if ($stagedExecutables.Count -ne 1 -or $stagedExecutables[0].Name -ne 'EpochGuiDemo.exe') {
-              throw 'Release staging must contain exactly EpochGuiDemo.exe and no other executable.'
-          }
-
-          $versionInfo = $stagedExecutables[0].VersionInfo
-          if ($versionInfo.ProductName -ne 'EpochGui Demo') {
-              throw 'Windows product metadata is missing or incorrect.'
-          }
-          if ($versionInfo.ProductVersion -notlike "$version*") {
-              throw "Windows product version does not match VERSION: $($versionInfo.ProductVersion)"
-          }
-
-          Compress-Archive -Path "$stage\*" -DestinationPath $zip -CompressionLevel Optimal
-
-          Expand-Archive -Path $zip -DestinationPath $verify -Force
-          $verifiedExecutables = @(Get-ChildItem $verify -Filter '*.exe' -File -Recurse)
-          if ($verifiedExecutables.Count -ne 1 -or $verifiedExecutables[0].Name -ne 'EpochGuiDemo.exe') {
-              throw 'Packaged ZIP does not contain exactly one expected executable.'
-          }
-          if (-not (Test-Path (Join-Path $verify 'assets\epochgui_demo.ppm'))) {
-              throw 'Packaged ZIP is missing assets/epochgui_demo.ppm.'
-          }
-
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $([System.IO.Path]::GetFileName($zip))" | Set-Content $checksum -Encoding ascii
-
-          "RELEASE_TAG=v$version" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "RELEASE_ZIP=$zip" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "RELEASE_CHECKSUM=$checksum" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+          ref: ${{ steps.pins.outputs.gui }}
+          path: dependencies/EpochGui
+          persist-credentials: false
+      - uses: actions/checkout@v5
         with:
-          name: epochgui-demo-windows
-          path: |
-            ${{ env.RELEASE_ZIP }}
-            ${{ env.RELEASE_CHECKSUM }}
+          repository: Autodidac/EpochPlatformEngine
+          ref: ${{ steps.pins.outputs.platform }}
+          path: dependencies/EpochPlatformEngine
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: Autodidac/EpochAudioEngine
+          ref: ${{ steps.pins.outputs.audio }}
+          path: dependencies/EpochAudioEngine
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: Autodidac/EpochMediaEngine
+          ref: ${{ steps.pins.outputs.media }}
+          path: dependencies/EpochMediaEngine
+          persist-credentials: false
+      - name: Check source package boundaries
+        run: python -B -m unittest discover -s tests -p '*_test.py'
+      - name: Install pinned CMake
+        run: python -m pip install cmake==4.4.2
+      - name: Build complete offline source candidate
+        shell: pwsh
+        run: |
+          python -B tools/package_source.py --dependency-root dependencies --output-dir build/candidates/source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Content VERSION -Raw).Trim()
+          $zip = Join-Path $PWD "build/candidates/source/EpochGui_Demo-v$version-source.zip"
+          Expand-Archive -LiteralPath $zip -DestinationPath build/offline-source
+          "DEMO_PROJECT_SOURCE=$PWD/build/offline-source/EpochGui_Demo-v$version-source" >> $env:GITHUB_ENV
+          "DEMO_SOURCE_ZIP=$zip" >> $env:GITHUB_ENV
+      - name: Configure the extracted full Platform graph
+        shell: pwsh
+        run: |
+          cmake -S "$env:DEMO_PROJECT_SOURCE" -B build/offline-build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTING=ON -DEPOCHGUI_DEMO_COMPOSITION=full -DEPOCHGUI_DEMO_HOST=platform -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Debug build and CPU contracts first
+        shell: pwsh
+        run: |
+          cmake --build build/offline-build --config Debug --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build/offline-build -C Debug --output-on-failure --timeout 60
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Release build and CPU contracts
+        shell: pwsh
+        run: |
+          cmake --build build/offline-build --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build/offline-build -C Release --output-on-failure --timeout 60
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package the exact extracted-source executable
+        shell: pwsh
+        run: |
+          python -B tools/package_runtime.py --binary build/offline-build/Release/EpochGuiDemo.exe --source-zip "$env:DEMO_SOURCE_ZIP" --platform windows-x64 --output-dir build/candidates/runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B .github/audit_source.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-windows-candidate
+          retention-days: 7
           if-no-files-found: error
-
-      - name: Publish GitHub release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $notes = 'Cross-platform EpochGui interactive catalog. Windows restores the current modern DWM title-bar theme after leaving borderless mode, includes an embedded application icon, coalesces input-driven rendering to prevent lockups, and keeps splitter drag capture until release. The Windows ZIP is published first; the Linux workflow then attaches a matching Linux x64 tar.gz and checksum.'
-
-          gh release view $env:RELEASE_TAG *> $null
-          if ($LASTEXITCODE -eq 0) {
-              throw 'Existing historical release is immutable; choose a new accepted version.'
-          }
-          else {
-              gh release create $env:RELEASE_TAG `
-                  $env:RELEASE_ZIP `
-                  $env:RELEASE_CHECKSUM `
-                  --target $env:GITHUB_SHA `
-                  --title "EpochGui Demo $env:RELEASE_TAG" `
-                  --notes $notes
-              if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
-          }
-
-      - name: Close resolved CI diagnostic
-        if: success()
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $existing = gh issue list `
-              --state open `
-              --search 'EpochGui Demo CI diagnostic in:title' `
-              --json number `
-              --jq '.[0].number'
-          if ($existing) {
-              gh issue close $existing --comment 'Resolved by the successful release build.'
-          }
+          include-hidden-files: false
+          path: |
+            build/candidates/source/*.zip
+            build/candidates/source/*.zip.sha256
+            build/candidates/runtime/*.zip
+            build/candidates/runtime/*.zip.sha256
+            build/audits/source-audit.json
+      - name: Native acceptance remains separate
+        run: echo "Candidate artifacts only. An owner must test the exact extracted executable before a manual release." >> $env:GITHUB_STEP_SUMMARY

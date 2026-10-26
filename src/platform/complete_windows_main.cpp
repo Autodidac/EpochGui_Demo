@@ -103,6 +103,7 @@ namespace
             renderer_ = epoch_gui_demo_create();
             if (!renderer_ || !epoch_gui_demo_initialize(renderer_, &load_opengl_proc))
                 return false;
+            epochgui_demo::win32::configure_renderer_clipboard(renderer_);
 
             update_renderer_size_from_client();
 
@@ -182,7 +183,7 @@ namespace
 
             if (native_frame_enabled_)
             {
-                SetWindowTheme(window_, L"Explorer", nullptr);
+                (void)SetWindowTheme(window_, L"Explorer", nullptr);
                 RedrawWindow(
                     window_,
                     nullptr,
@@ -333,10 +334,11 @@ namespace
         {
             feed_pointer_position(lparam);
             epoch_gui_demo_pointer_button(renderer_, button, down);
-            if (down)
-                SetCapture(window_);
-            else if (GetCapture() == window_)
-                ReleaseCapture();
+            const auto bit = 1u << static_cast<unsigned>(button);
+            if (down) held_buttons_ |= bit;
+            else held_buttons_ &= ~bit;
+            if (held_buttons_) SetCapture(window_);
+            else if (GetCapture() == window_) ReleaseCapture();
             request_render();
         }
 
@@ -445,6 +447,22 @@ namespace
                 }
                 return 0;
 
+            case WM_KILLFOCUS:
+            case WM_CANCELMODE:
+                held_buttons_ = 0;
+                epoch_gui_demo_cancel_input(renderer_);
+                if (GetCapture() == window_) ReleaseCapture();
+                request_render();
+                return 0;
+            case WM_CAPTURECHANGED:
+                if (held_buttons_ && reinterpret_cast<HWND>(lparam) != window_)
+                {
+                    held_buttons_ = 0;
+                    epoch_gui_demo_cancel_input(renderer_);
+                    request_render();
+                }
+                return 0;
+
             case WM_MOUSEMOVE:
                 feed_pointer_position(lparam);
                 request_render();
@@ -491,13 +509,18 @@ namespace
             case WM_KEYUP:
             case WM_SYSKEYUP:
             {
+                const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+                const bool repeated = down && (lparam & (1LL << 30)) != 0;
+                update_modifiers();
+                if (epochgui_demo::win32::dispatch_edit_shortcut(renderer_, wparam, down, repeated))
+                {
+                    request_render();
+                    return 0;
+                }
                 const int key = key_from_virtual_key(wparam);
                 if (key >= 0 && renderer_)
                 {
-                    const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
-                    const bool repeated = down && (lparam & (1LL << 30)) != 0;
                     epoch_gui_demo_key_event(renderer_, key, down, repeated);
-                    update_modifiers();
                     request_render();
                     return 0;
                 }
@@ -559,6 +582,7 @@ namespace
         bool frame_change_in_progress_{};
         bool render_message_pending_{};
         bool rendering_{};
+        unsigned held_buttons_{};
         bool graphics_shutdown_{};
     };
 }

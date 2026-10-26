@@ -1,6 +1,7 @@
 #include "epochgui_demo/app_bridge.hpp"
 
 #include <new>
+#include <string>
 #include <string_view>
 
 import epoch.gui.demo.opengl;
@@ -8,7 +9,23 @@ import epoch.gui.demo.opengl;
 struct epoch_gui_demo_renderer
 {
     epochengine::gui_demo::OpenGLRenderer renderer{};
+    std::string copied_text{};
 };
+
+const char* epoch_gui_demo_edit_command(epoch_gui_demo_renderer* renderer,
+    int command, const char* pasted_utf8)
+{
+    if (!renderer) return "";
+    renderer->copied_text = renderer->renderer.edit_command(command,
+        pasted_utf8 ? std::string_view{pasted_utf8} : std::string_view{});
+    return renderer->copied_text.c_str();
+}
+
+void epoch_gui_demo_set_clipboard(epoch_gui_demo_renderer* renderer,
+    const char* (*reader)(void*), bool (*writer)(void*, const char*), void* user)
+{
+    if (renderer) renderer->renderer.set_clipboard(reader, writer, user);
+}
 
 namespace
 {
@@ -101,6 +118,39 @@ void epoch_gui_demo_pointer_button(
     if (renderer)
         renderer->renderer.pointer_button(pointer_button_from(button), down);
 }
+
+void epoch_gui_demo_cancel_input(epoch_gui_demo_renderer* renderer)
+{
+    if (renderer) renderer->renderer.cancel_input();
+}
+
+bool epoch_gui_demo_external_view(const epoch_gui_demo_renderer* renderer, unsigned id, epoch_gui_demo_view_info* output)
+{
+    if (!renderer || !output) return false;
+    epochengine::gui_demo::ExternalViewInfo info;
+    if (!renderer->renderer.external_view(id, info)) return false;
+    *output = {info.id, info.title.data(), info.width, info.height, info.attached};
+    return true;
+}
+
+bool epoch_gui_demo_initialize_view(epoch_gui_demo_renderer* renderer, unsigned id, epoch_gui_demo_proc_loader loader)
+{ return renderer && renderer->renderer.initialize_view(id, reinterpret_cast<epochengine::gui_demo::OpenGLProcLoader>(loader)); }
+void epoch_gui_demo_release_view(epoch_gui_demo_renderer* renderer, unsigned id)
+{ if (renderer) renderer->renderer.release_view(id); }
+void epoch_gui_demo_release_primary(epoch_gui_demo_renderer* renderer)
+{ if (renderer) renderer->renderer.release_primary(); }
+void epoch_gui_demo_redock_view(epoch_gui_demo_renderer* renderer, unsigned id)
+{ if (renderer) renderer->renderer.redock_view(id); }
+void epoch_gui_demo_resize_view(epoch_gui_demo_renderer* renderer, unsigned id, int width, int height, float dpi_scale)
+{ if (renderer) renderer->renderer.resize_view(id, width, height, dpi_scale); }
+void epoch_gui_demo_set_input_source(epoch_gui_demo_renderer* renderer, unsigned id)
+{ if (renderer) renderer->renderer.set_input_source(id); }
+void epoch_gui_demo_pointer_move_view(epoch_gui_demo_renderer* renderer, unsigned id, float x, float y)
+{ if (renderer) renderer->renderer.pointer_move_view(id, x, y); }
+bool epoch_gui_demo_render_view(epoch_gui_demo_renderer* renderer, unsigned id)
+{ return renderer && renderer->renderer.render_view(id); }
+void epoch_gui_demo_report_view_error(epoch_gui_demo_renderer* renderer, const char* message)
+{ if (renderer) renderer->renderer.report_view_error(message ? std::string_view{message} : std::string_view{}); }
 
 void epoch_gui_demo_wheel(
     epoch_gui_demo_renderer* renderer,

@@ -2,6 +2,7 @@ module;
 
 #include <algorithm>
 #include <memory>
+#include <string>
 #include <string_view>
 
 export module epoch.gui.demo.opengl;
@@ -75,6 +76,15 @@ export namespace epochengine::gui_demo
     using WindowChromeRegion = input::WindowChromeRegion;
     using WindowCommand = input::WindowCommand;
 
+    struct ExternalViewInfo
+    {
+        unsigned id{};
+        std::string_view title{};
+        int width{};
+        int height{};
+        bool attached{};
+    };
+
     class OpenGLRenderer final
     {
     public:
@@ -91,10 +101,24 @@ export namespace epochengine::gui_demo
         void resize(int width, int height) noexcept;
         void pointer_move(float x, float y) noexcept;
         void pointer_button(PointerButton button, bool down) noexcept;
+        void cancel_input() noexcept;
+        [[nodiscard]] bool external_view(unsigned id, ExternalViewInfo& info) const noexcept;
+        [[nodiscard]] bool initialize_view(unsigned id, OpenGLProcLoader loader) noexcept;
+        void release_view(unsigned id) noexcept; // Caller makes that view's graphics context current.
+        void release_primary() noexcept;
+        void redock_view(unsigned id) noexcept;
+        void resize_view(unsigned id, int width, int height, float dpi_scale) noexcept;
+        void set_input_source(unsigned id) noexcept;
+        void pointer_move_view(unsigned id, float x, float y) noexcept;
+        [[nodiscard]] bool render_view(unsigned id) noexcept;
+        void report_view_error(std::string_view message);
+
         void wheel(float horizontal, float vertical) noexcept;
         void key(Key key_code, bool down, bool repeated = false) noexcept;
         void modifiers(input::ModifierState state) noexcept;
         void text_input(std::string_view text);
+        [[nodiscard]] std::string edit_command(int command, std::string_view pasted_text = {});
+        void set_clipboard(const char* (*reader)(void*), bool (*writer)(void*, const char*), void* user) noexcept;
         void render() noexcept;
 
         [[nodiscard]] WindowChromeRegion window_chrome_hit_test(float x, float y) const noexcept;
