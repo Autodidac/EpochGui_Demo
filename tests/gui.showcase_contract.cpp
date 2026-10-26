@@ -15,11 +15,23 @@ namespace
     int width = 1280, height = 820;
     bool clipped{}, invalid_clip{};
     unsigned clipped_draws{}, draws{};
-    struct Point { float x, y; };
+    struct Point { float x, y; bool operator==(const Point&) const = default; };
     std::vector<Point> uploaded{};
     std::array<float, 4> color{};
     bool edit_label_sample{}, fractional_glyph{};
     unsigned sampled_glyph_pixels{};
+    bool probe_enabled{};
+    Point probe{};
+    std::array<float, 4> probe_color{};
+    bool triangle_contains(Point p, Point a, Point b, Point c)
+    {
+        const auto cross = [](Point p, Point a, Point b) {
+            return (p.x - b.x) * (a.y - b.y) - (a.x - b.x) * (p.y - b.y);
+        };
+        if (std::abs(cross(a, b, c)) < 0.00001f) return false;
+        const float x = cross(p, a, b), y = cross(p, b, c), z = cross(p, c, a);
+        return !((x < 0 || y < 0 || z < 0) && (x > 0 || y > 0 || z > 0));
+    }
     void generate(int count, U* values) { for (int n = 0; n < count; ++n) values[n] = U(n + 1); }
     void delete_objects(int, const U*) {}
     void one(U) {}
@@ -52,6 +64,10 @@ namespace
     {
         ++draws;
         if (clipped) ++clipped_draws;
+        if (probe_enabled && !clipped)
+            for (int n = first; n + 2 < first + count; n += 3)
+                if (triangle_contains(probe, uploaded[n], uploaded[n + 1], uploaded[n + 2]))
+                    probe_color = color;
         if (count != 6 || first < 0 || static_cast<std::size_t>(first + count) > uploaded.size()) return;
         if (std::abs(color[0] - 234.0f / 255.0f) > 0.001f
             || std::abs(color[1] - 240.0f / 255.0f) > 0.001f) return;
@@ -145,6 +161,16 @@ int main()
     epoch_gui_demo_modifiers(renderer, false, false, false, false);
     epoch_gui_demo_render(renderer);
     if (std::string(epoch_gui_demo_edit_command(renderer, 1, nullptr)) != "") return 6;
+    probe_enabled = true;
+    probe = {800.0f, 650.0f}; // Visible hosted-window body, previously never drawn.
+    epoch_gui_demo_render(renderer);
+    if (std::abs(probe_color[0] - 20.0f / 255.0f) > 0.001f) return 10;
+    probe = {290.0f, 180.0f}; // Visible RECT control, not the old hit rectangle 32px above it.
+    click(renderer, probe.x, probe.y);
+    if (std::abs(probe_color[0] - 49.0f / 255.0f) > 0.001f) return 11;
+    const auto docked_geometry = uploaded;
+    click(renderer, 500.0f, 228.0f); // Visible dock title must actually change its layout.
+    if (uploaded == docked_geometry) return 12;
     if (invalid_clip || clipped || clipped_draws == 0 || draws < clipped_draws) return 7;
     return 0;
 }

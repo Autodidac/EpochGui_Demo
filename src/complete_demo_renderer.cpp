@@ -950,15 +950,23 @@ void main()
             }
         }
 
+        [[nodiscard]] static gui::SegmentedControlLayoutOptions window_mode_options() noexcept
+        {
+            static constexpr std::array<float, 3> widths{92.0f, 102.0f, 92.0f};
+            return {.position = {246.0f, 164.0f}, .item_widths = widths, .height = 32.0f, .gap = 4.0f};
+        }
+
+        [[nodiscard]] static gui::DockLayoutOptions window_dock_options() noexcept
+        {
+            return {.workspace = {{246.0f, 214.0f}, {970.0f, 176.0f}},
+                .min_pane_size = {96.0f, 64.0f}, .default_popout_size = {300.0f, 190.0f},
+                .edge_fraction = 0.22f, .title_bar_height = 28.0f, .content_padding = 6.0f,
+                .popout_spacing = 22.0f, .visible_margin = 48.0f};
+        }
+
         void update_display_mode(const input::InputFrame& frame) noexcept
         {
-            constexpr std::array<float, 3> widths{ 92.0f, 102.0f, 92.0f };
-            const gui::SegmentedControlLayoutOptions options{
-                .position = { 246.0f, 132.0f },
-                .item_widths = widths,
-                .height = 32.0f,
-                .gap = 4.0f
-            };
+            const auto options = window_mode_options();
             if (frame.pointer(input::PointerButton::left).released)
             {
                 const std::uint32_t item = gui::segmented_control_item_at(options, frame.pointer_position);
@@ -1014,16 +1022,7 @@ void main()
             update_display_mode(frame);
             update_floating_windows(frame);
 
-            const gui::DockLayoutOptions options{
-                .workspace = { { 246.0f, 182.0f }, { 970.0f, 188.0f } },
-                .min_pane_size = { 96.0f, 64.0f },
-                .default_popout_size = { 300.0f, 190.0f },
-                .edge_fraction = 0.22f,
-                .title_bar_height = 28.0f,
-                .content_padding = 6.0f,
-                .popout_spacing = 22.0f,
-                .visible_margin = 48.0f
-            };
+            const auto options = window_dock_options();
             gui::DockLayoutInput dock_input{
                 .mouse_position = frame.pointer_position,
                 .mouse_pressed = frame.pointer(input::PointerButton::left).pressed,
@@ -1063,7 +1062,7 @@ void main()
                     .viewport_size = { canvas_width, canvas_height },
                     .title_bar_height = 28.0f,
                     .content_padding = 6.0f,
-                    .action_button_width = 58.0f,
+                    .action_button_width = 36.0f,
                     .action_button_gap = 4.0f,
                     .allow_dock = true,
                     .allow_float = true,
@@ -1647,14 +1646,8 @@ void main()
         void draw_windows_page(const input::InputFrame& frame)
         {
             draw_text(batch, 246.0f, 140.0f, "WINDOWING AND HOSTING", 1.8f, text_primary);
-            constexpr std::array<float, 3> widths{ 92.0f,102.0f,92.0f };
-            constexpr std::array<std::string_view, 3> labels{ "RECT", "ROUNDED", "BOTH" };
-            const gui::SegmentedControlLayoutOptions mode_options{
-                .position = { 246.0f, 164.0f },
-                .item_widths = widths,
-                .height = 32.0f,
-                .gap = 4.0f
-            };
+            constexpr std::array<std::string_view, 3> labels{"RECT", "ROUNDED", "BOTH"};
+            const auto mode_options = window_mode_options();
             for (std::uint32_t index = 0; index < labels.size(); ++index)
             {
                 const gui::Rect item = gui::segmented_control_item_layout(mode_options, index);
@@ -1666,16 +1659,7 @@ void main()
                     display_mode == index ? text_primary : text_secondary);
             }
 
-            const gui::DockLayoutOptions dock_options{
-                .workspace = { { 246.0f, 214.0f }, { 970.0f, 176.0f } },
-                .min_pane_size = { 96.0f, 64.0f },
-                .default_popout_size = { 300.0f, 190.0f },
-                .edge_fraction = 0.22f,
-                .title_bar_height = 28.0f,
-                .content_padding = 6.0f,
-                .popout_spacing = 22.0f,
-                .visible_margin = 48.0f
-            };
+            const auto dock_options = window_dock_options();
             const gui::DockLayoutInput dock_input{ .mouse_position = frame.pointer_position };
             constexpr std::array<std::string_view, 3> pane_names{ "TREE", "VIEWPORT", "INSPECTOR" };
             for (std::size_t index = 0; index < dock_panes.size(); ++index)
@@ -1701,6 +1685,44 @@ void main()
             {
                 draw_floating_window(core_window, core_layout, false, false);
                 draw_floating_window(rounded_window, rounded_layout, true, rounded_visible);
+            }
+
+            // Present the same Gui-owned frames that receive actions and hit tests.
+            const auto& hosted = dockable_result.chrome;
+            if (hosted.visible)
+            {
+                draw_surface(batch, hosted.frame, true, 7.0f, panel_fill, accent, 1.0f);
+                draw_surface(batch, hosted.title_bar, true, 6.0f, control_fill, panel_border, 0.0f);
+                draw_text(batch, hosted.title_bar.position.x + 6.0f, hosted.title_bar.position.y + 9.0f,
+                    "HOST", 1.0f, text_primary);
+                const std::array<gui::Rect, 4> actions{hosted.dock_button, hosted.float_button,
+                    hosted.detach_button, hosted.close_button};
+                constexpr std::array<std::string_view, 4> names{"DOCK", "FLOAT", "OUT", "X"};
+                for (std::size_t index = 0; index < actions.size(); ++index)
+                {
+                    if (actions[index].size.x <= 0 || actions[index].size.y <= 0) continue;
+                    draw_surface(batch, actions[index], true, 3.0f, control_hover, panel_border, 1.0f);
+                    draw_text(batch, actions[index].position.x + 3.0f, actions[index].position.y + 8.0f,
+                        names[index], 0.9f, text_primary);
+                }
+                ClipScope content_clip(batch, hosted.content);
+                const char* mode = dockable_result.mode == gui::DockableWindowMode::docked ? "DOCKED"
+                    : dockable_result.mode == gui::DockableWindowMode::floating ? "FLOATING"
+                    : "DETACHED LAYOUT";
+                draw_text(batch, hosted.content.position.x + 8.0f, hosted.content.position.y + 12.0f,
+                    mode, 1.2f, text_primary);
+                draw_text(batch, hosted.content.position.x + 8.0f, hosted.content.position.y + 36.0f,
+                    "GUI GEOMETRY ONLY", 1.0f, text_secondary);
+            }
+            const auto& panel = panel_host_result.metadata;
+            if (panel.visible)
+            {
+                draw_surface(batch, panel.frame, true, 7.0f, panel_fill, green, 1.0f);
+                ClipScope content_clip(batch, panel.frame);
+                draw_text(batch, panel.frame.position.x + 10.0f, panel.frame.position.y + 12.0f,
+                    "PANEL HOST", 1.2f, text_primary);
+                draw_text(batch, panel.frame.position.x + 10.0f, panel.frame.position.y + 38.0f,
+                    panel.mode == gui::PanelHostMode::floating ? "FLOATING" : "DOCKED", 1.1f, green);
             }
 
             constexpr std::array<gui::Rect, 3> dock_buttons{
