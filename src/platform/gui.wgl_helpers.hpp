@@ -244,6 +244,31 @@ namespace epochgui_demo::win32
         catch (...) { }
     }
 
+    // Platform callbacks arrive after the native message queue has been drained.
+    // Preserve modifier order from those events instead of sampling later OS state.
+    struct QueuedModifiers
+    {
+        bool shift{}, control{}, alt{}, super{};
+        void key(WPARAM value, bool down) noexcept
+        {
+            if (value == VK_SHIFT || value == VK_LSHIFT || value == VK_RSHIFT) shift = down;
+            if (value == VK_CONTROL || value == VK_LCONTROL || value == VK_RCONTROL) control = down;
+            if (value == VK_MENU || value == VK_LMENU || value == VK_RMENU) alt = down;
+            if (value == VK_LWIN || value == VK_RWIN) super = down;
+        }
+    };
+
+    [[nodiscard]] inline bool dispatch_edit_shortcut_with_modifiers(epoch_gui_demo_renderer* renderer,
+        WPARAM virtual_key, bool down, bool repeated, const QueuedModifiers& modifiers) noexcept
+    {
+        if (!renderer || modifiers.alt) return false;
+        const int command = edit_shortcut_command(virtual_key, modifiers.control,
+            modifiers.shift, down, repeated);
+        if (command < 0) return false;
+        try { (void)epoch_gui_demo_edit_command(renderer, command, nullptr); return true; }
+        catch (...) { return false; }
+    }
+
     [[nodiscard]] inline bool dispatch_edit_shortcut(epoch_gui_demo_renderer* renderer,
         WPARAM virtual_key, bool down, bool repeated = false) noexcept
     {

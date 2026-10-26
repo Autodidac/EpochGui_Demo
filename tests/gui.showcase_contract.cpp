@@ -141,8 +141,8 @@ int main()
     if (std::string(epoch_gui_demo_edit_command(renderer, 1, nullptr)) != "A SMALL PROJECT") return 5;
     epoch_gui_demo_modifiers(renderer, false, true, false, false);
     epoch_gui_demo_key_event(renderer, EPOCH_GUI_DEMO_KEY_TAB, true, false);
-    epoch_gui_demo_render(renderer);
     epoch_gui_demo_key_event(renderer, EPOCH_GUI_DEMO_KEY_TAB, false, false);
+    epoch_gui_demo_modifiers(renderer, false, false, false, false);
     epoch_gui_demo_render(renderer);
     if (std::string(epoch_gui_demo_edit_command(renderer, 1, nullptr)) != "") return 6;
     if (invalid_clip || clipped || clipped_draws == 0 || draws < clipped_draws) return 7;

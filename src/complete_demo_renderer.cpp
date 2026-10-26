@@ -570,6 +570,7 @@ void main()
         gui::TextControlState static_state{};
         std::string pending_text{};
         std::uint32_t active_text_control{};
+        int pending_workspace_step{};
 
         image::Image demo_image{};
         bool image_fit{ true };
@@ -1366,6 +1367,18 @@ void main()
         void update_ui()
         {
             const input::InputFrame& frame = input_tracker.frame();
+            if (pending_workspace_step != 0)
+            {
+                constexpr std::array<std::uint32_t, 3> pages{0, 1, 5};
+                const auto current = std::find(pages.begin(), pages.end(), page);
+                const std::size_t index = current == pages.end() ? 0u : static_cast<std::size_t>(current - pages.begin());
+                page = pages[(index + (pending_workspace_step < 0 ? 2u : 1u)) % pages.size()];
+                pending_workspace_step = 0;
+                pending_text.clear();
+                active_text_control = 0;
+                edit_state.focused = multiline_state.focused = static_state.focused = false;
+                return;
+            }
             const input::WindowCommand command = input::borderless_window_command(chrome_layout, frame);
             if (command != input::WindowCommand::none)
                 pending_window_command = command;
@@ -1389,16 +1402,7 @@ void main()
 
             if (frame.key(input::Key::escape).pressed && context_popup.open)
                 context_popup.open = false;
-            else if (frame.key(input::Key::tab).pressed && frame.modifiers.control)
-            {
-                constexpr std::array<std::uint32_t, 3> pages{0, 1, 5};
-                const auto current = std::find(pages.begin(), pages.end(), page);
-                const std::size_t index = current == pages.end() ? 0u : static_cast<std::size_t>(current - pages.begin());
-                page = pages[(index + (frame.modifiers.shift ? 2u : 1u)) % pages.size()];
-                active_text_control = 0;
-                edit_state.focused = multiline_state.focused = static_state.focused = false;
-            }
-            else if (page == 0 && frame.key(input::Key::tab).pressed && active_text_control != 2)
+            if (page == 0 && frame.key(input::Key::tab).pressed && active_text_control != 2)
             {
                 active_text_control = active_text_control == 0 ? 1
                     : frame.modifiers.shift ? (active_text_control == 1 ? 3 : active_text_control - 1)
@@ -2101,7 +2105,12 @@ void main()
     void OpenGLRenderer::key(Key key_code, bool down, bool repeated) noexcept
     {
         if (impl_)
+        {
+            if (key_code == input::Key::tab && down && !repeated
+                && impl_->input_tracker.frame().modifiers.control)
+                impl_->pending_workspace_step = impl_->input_tracker.frame().modifiers.shift ? -1 : 1;
             impl_->input_tracker.set_key(key_code, down, repeated);
+        }
     }
 
     void OpenGLRenderer::modifiers(input::ModifierState state) noexcept

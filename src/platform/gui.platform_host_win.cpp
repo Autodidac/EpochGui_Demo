@@ -16,6 +16,7 @@ namespace
         epoch_gui_demo_renderer* renderer_{};
         wchar_t high_surrogate_{};
         unsigned held_buttons_{};
+        epochgui_demo::win32::QueuedModifiers modifiers_{};
 
         void shutdown_graphics() noexcept
         {
@@ -61,11 +62,11 @@ namespace
                 break;
             case key_pressed:
             case key_released:
-                epoch_gui_demo_modifiers(renderer_, (GetKeyState(VK_SHIFT) & 0x8000) != 0,
-                    (GetKeyState(VK_CONTROL) & 0x8000) != 0, (GetKeyState(VK_MENU) & 0x8000) != 0,
-                    (GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0);
-                if (epochgui_demo::win32::dispatch_edit_shortcut(renderer_, event.key,
-                        event.type == key_pressed, event.repeated)) break;
+                modifiers_.key(event.key, event.type == key_pressed);
+                epoch_gui_demo_modifiers(renderer_, modifiers_.shift, modifiers_.control,
+                    modifiers_.alt, modifiers_.super);
+                if (epochgui_demo::win32::dispatch_edit_shortcut_with_modifiers(renderer_, event.key,
+                        event.type == key_pressed, event.repeated, modifiers_)) break;
                 if (const int key = epochgui_demo::win32::key_from_virtual_key(event.key); key >= 0)
                     epoch_gui_demo_key_event(renderer_, key, event.type == key_pressed, event.repeated);
                 break;
@@ -85,6 +86,7 @@ namespace
                 break;
             }
             case focus_lost:
+                modifiers_ = {};
                 held_buttons_ = 0;
                 if (GetCapture() == window_) ReleaseCapture();
                 for (int key = EPOCH_GUI_DEMO_KEY_ESCAPE; key <= EPOCH_GUI_DEMO_KEY_SUPER; ++key)

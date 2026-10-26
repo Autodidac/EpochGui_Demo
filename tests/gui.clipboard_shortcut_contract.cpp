@@ -19,6 +19,15 @@ int main()
         || host::edit_shortcut_command('Z', true, true, true) != 5
         || host::edit_shortcut_command('Y', true, false, true) != 5
         || host::edit_shortcut_command('Q', true, false, true) != -1) return 2;
+    host::QueuedModifiers queued;
+    queued.key(VK_CONTROL, true);
+    if (host::edit_shortcut_command('V', queued.control, queued.shift, true) != 3) return 7;
+    queued.key(VK_SHIFT, true);
+    if (host::edit_shortcut_command('Z', queued.control, queued.shift, true) != 5) return 8;
+    queued.key(VK_CONTROL, false);
+    queued.key(VK_SHIFT, false);
+    if (queued.control || queued.shift
+        || host::edit_shortcut_command('V', queued.control, queued.shift, true) != -1) return 9;
     std::wstring wide;
     std::string utf8;
     const std::string original = "line one\n\xc3\xa9 \xf0\x9f\x98\x80\n";
