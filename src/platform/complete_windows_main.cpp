@@ -183,7 +183,7 @@ namespace
 
             if (native_frame_enabled_)
             {
-                SetWindowTheme(window_, L"Explorer", nullptr);
+                (void)SetWindowTheme(window_, L"Explorer", nullptr);
                 RedrawWindow(
                     window_,
                     nullptr,
@@ -334,10 +334,11 @@ namespace
         {
             feed_pointer_position(lparam);
             epoch_gui_demo_pointer_button(renderer_, button, down);
-            if (down)
-                SetCapture(window_);
-            else if (GetCapture() == window_)
-                ReleaseCapture();
+            const auto bit = 1u << static_cast<unsigned>(button);
+            if (down) held_buttons_ |= bit;
+            else held_buttons_ &= ~bit;
+            if (held_buttons_) SetCapture(window_);
+            else if (GetCapture() == window_) ReleaseCapture();
             request_render();
         }
 
@@ -442,6 +443,22 @@ namespace
                         renderer_,
                         (std::max)(1, static_cast<int>(LOWORD(lparam))),
                         (std::max)(1, static_cast<int>(HIWORD(lparam))));
+                    request_render();
+                }
+                return 0;
+
+            case WM_KILLFOCUS:
+            case WM_CANCELMODE:
+                held_buttons_ = 0;
+                epoch_gui_demo_cancel_input(renderer_);
+                if (GetCapture() == window_) ReleaseCapture();
+                request_render();
+                return 0;
+            case WM_CAPTURECHANGED:
+                if (held_buttons_ && reinterpret_cast<HWND>(lparam) != window_)
+                {
+                    held_buttons_ = 0;
+                    epoch_gui_demo_cancel_input(renderer_);
                     request_render();
                 }
                 return 0;
@@ -565,6 +582,7 @@ namespace
         bool frame_change_in_progress_{};
         bool render_message_pending_{};
         bool rendering_{};
+        unsigned held_buttons_{};
         bool graphics_shutdown_{};
     };
 }

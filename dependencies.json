@@ -1,7 +1,7 @@
 {
   "schema": "epoch.source_distribution.v1",
   "source_revisions": {
-    "Gui": "068c39b3f234a74ec187ddf0740c5d2ddb37a390",
+    "Gui": "7d5d5514a1443c0ef340a626fa163569858ca362",
     "Platform": "7190bf71ef3e8ecde4113efcda5804ce41fc023d",
     "Audio": "980ebd3304f7e5cfc97e48c1e093ea1fc2107760",
     "Media": "47ae75acf1e2ff04af9852f7c80a28d26ef145f0"

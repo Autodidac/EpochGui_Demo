@@ -70,6 +70,15 @@ extern "C"
         EPOCH_GUI_DEMO_FRAME_MODE_NATIVE = 1
     };
 
+    struct epoch_gui_demo_view_info
+    {
+        unsigned id;
+        const char* title;
+        int width;
+        int height;
+        bool attached;
+    };
+
     struct epoch_gui_demo_renderer;
 
     // 0 Select all, 1 Copy, 2 Cut, 3 Paste, 4 Undo, 5 Redo.
@@ -100,6 +109,22 @@ extern "C"
         epoch_gui_demo_renderer* renderer,
         int button,
         bool down);
+
+    // Cancel held input without synthesizing a release/click or changing document text.
+    void epoch_gui_demo_cancel_input(epoch_gui_demo_renderer* renderer);
+
+    // Platform-hosted native views: ids1..3 are dock panes, id4 is the detached host.
+    // Graphics initialize/release/render run with the matching native context current.
+    bool epoch_gui_demo_external_view(const epoch_gui_demo_renderer*, unsigned id, epoch_gui_demo_view_info*);
+    bool epoch_gui_demo_initialize_view(epoch_gui_demo_renderer*, unsigned id, epoch_gui_demo_proc_loader);
+    void epoch_gui_demo_release_view(epoch_gui_demo_renderer*, unsigned id);
+    void epoch_gui_demo_release_primary(epoch_gui_demo_renderer*);
+    void epoch_gui_demo_redock_view(epoch_gui_demo_renderer*, unsigned id);
+    void epoch_gui_demo_resize_view(epoch_gui_demo_renderer*, unsigned id, int width, int height, float dpi_scale);
+    void epoch_gui_demo_set_input_source(epoch_gui_demo_renderer*, unsigned id);
+    void epoch_gui_demo_pointer_move_view(epoch_gui_demo_renderer*, unsigned id, float x, float y);
+    bool epoch_gui_demo_render_view(epoch_gui_demo_renderer*, unsigned id);
+    void epoch_gui_demo_report_view_error(epoch_gui_demo_renderer*, const char* message);
 
     void epoch_gui_demo_wheel(
         epoch_gui_demo_renderer* renderer,

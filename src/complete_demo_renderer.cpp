@@ -227,6 +227,7 @@ namespace epochengine::gui_demo
             std::vector<DrawCommand> commands{};
             gui::Vec2 translation{};
             gui::Vec2 pixel_scale{1.0f, 1.0f};
+            gui::Vec2 pixel_origin{};
             std::optional<gui::Rect> clip{};
 
             void clear()
@@ -262,13 +263,13 @@ namespace epochengine::gui_demo
                 // Bitmap cells must cover whole framebuffer pixels. Fractional
                 // quads at the small label scales are unstable under viewport
                 // scaling; clipping geometry and ordinary surfaces stay unchanged.
-                const float left = std::round((rect.position.x + translation.x) * pixel_scale.x);
-                const float top = std::round((rect.position.y + translation.y) * pixel_scale.y);
+                const float left = std::round((rect.position.x + translation.x - pixel_origin.x) * pixel_scale.x);
+                const float top = std::round((rect.position.y + translation.y - pixel_origin.y) * pixel_scale.y);
                 const float right = (std::max)(left + 1.0f,
-                    std::round((rect.position.x + translation.x + rect.size.x) * pixel_scale.x));
+                    std::round((rect.position.x + translation.x + rect.size.x - pixel_origin.x) * pixel_scale.x));
                 const float bottom = (std::max)(top + 1.0f,
-                    std::round((rect.position.y + translation.y + rect.size.y) * pixel_scale.y));
-                append_rect({{left / pixel_scale.x - translation.x, top / pixel_scale.y - translation.y},
+                    std::round((rect.position.y + translation.y + rect.size.y - pixel_origin.y) * pixel_scale.y));
+                append_rect({{left / pixel_scale.x + pixel_origin.x - translation.x, top / pixel_scale.y + pixel_origin.y - translation.y},
                     {(right - left) / pixel_scale.x, (bottom - top) / pixel_scale.y}}, color);
             }
 
@@ -488,10 +489,11 @@ namespace epochengine::gui_demo
             constexpr const char* vertex_source = R"(#version 150 core
 in vec2 inPosition;
 uniform vec2 uCanvas;
+uniform vec2 uOrigin;
 void main()
 {
-    vec2 clip = vec2((inPosition.x / uCanvas.x) * 2.0 - 1.0,
-                     1.0 - (inPosition.y / uCanvas.y) * 2.0);
+    vec2 clip = vec2(((inPosition.x - uOrigin.x) / uCanvas.x) * 2.0 - 1.0,
+                     1.0 - ((inPosition.y - uOrigin.y) / uCanvas.y) * 2.0);
     gl_Position = vec4(clip, 0.0, 1.0);
 })";
             constexpr const char* fragment_source = R"(#version 150 core
@@ -535,16 +537,123 @@ void main()
             }
             return program;
         }
+        struct GpuSurface
+        {
+            OpenGLFunctions gl{};
+            GLuint program{};
+            GLuint vertex_array{};
+            GLuint vertex_buffer{};
+            GLint canvas_uniform{-1};
+            GLint origin_uniform{-1};
+            GLint color_uniform{-1};
+            bool initialized{};
+            void release() noexcept
+            {
+                if (vertex_buffer != 0)
+                    gl.delete_buffers(1, &vertex_buffer);
+                if (vertex_array != 0)
+                    gl.delete_vertex_arrays(1, &vertex_array);
+                if (program != 0)
+                    gl.delete_program(program);
+                vertex_buffer = 0;
+                vertex_array = 0;
+                program = 0;
+                initialized = false;
+            }
+
+            [[nodiscard]] bool initialize(OpenGLProcLoader loader) noexcept
+            {
+                if (initialized)
+                    return true;
+                if (!gl.load(loader))
+                    return false;
+                program = create_program(gl);
+                if (program == 0)
+                    return false;
+                canvas_uniform = gl.get_uniform_location(program, "uCanvas");
+                origin_uniform = gl.get_uniform_location(program, "uOrigin");
+                color_uniform = gl.get_uniform_location(program, "uColor");
+                if (canvas_uniform < 0 || origin_uniform < 0 || color_uniform < 0)
+                {
+                    release();
+                    return false;
+                }
+                gl.gen_vertex_arrays(1, &vertex_array);
+                gl.bind_vertex_array(vertex_array);
+                gl.gen_buffers(1, &vertex_buffer);
+                gl.bind_buffer(GL_ARRAY_BUFFER, vertex_buffer);
+                gl.enable_vertex_attrib_array(0);
+                gl.vertex_attrib_pointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(gui::Vec2), nullptr);
+                initialized = vertex_array != 0 && vertex_buffer != 0;
+                if (!initialized)
+                    release();
+                return initialized;
+            }
+
+            void draw_batch(const SceneBatch& batch, gui::Rect view, int width, int height)
+            {
+                if (!initialized || view.size.x <= 0.0f || view.size.y <= 0.0f) return;
+                gl.viewport(0, 0, width, height);
+                gl.clear_color(background.r, background.g, background.b, background.a);
+                gl.clear(GL_COLOR_BUFFER_BIT);
+                gl.use_program(program);
+                gl.uniform_2f(canvas_uniform, view.size.x, view.size.y);
+                gl.uniform_2f(origin_uniform, view.position.x, view.position.y);
+                gl.bind_vertex_array(vertex_array);
+                gl.bind_buffer(GL_ARRAY_BUFFER, vertex_buffer);
+                gl.buffer_data(
+                    GL_ARRAY_BUFFER,
+                    static_cast<GLsizeiptr>(batch.vertices.size() * sizeof(gui::Vec2)),
+                    batch.vertices.empty() ? nullptr : batch.vertices.data(),
+                    GL_DYNAMIC_DRAW);
+                std::optional<gui::Rect> applied_clip{};
+                for (const DrawCommand& command : batch.commands)
+                {
+                    const bool same_clip = command.clip.has_value() == applied_clip.has_value()
+                        && (!command.clip || (command.clip->position.x == applied_clip->position.x
+                            && command.clip->position.y == applied_clip->position.y
+                            && command.clip->size.x == applied_clip->size.x
+                            && command.clip->size.y == applied_clip->size.y));
+                    if (!same_clip)
+                    {
+                        if (command.clip)
+                        {
+                            const auto clipped = intersection(*command.clip, view);
+                            const float sx = static_cast<float>(width) / view.size.x;
+                            const float sy = static_cast<float>(height) / view.size.y;
+                            const int left = static_cast<int>(std::ceil((clipped.position.x - view.position.x) * sx));
+                            const int right = static_cast<int>(std::floor((clipped.position.x + clipped.size.x - view.position.x) * sx));
+                            const int top = static_cast<int>(std::ceil((clipped.position.y - view.position.y) * sy));
+                            const int bottom = static_cast<int>(std::floor((clipped.position.y + clipped.size.y - view.position.y) * sy));
+                            gl.enable(GL_SCISSOR_TEST);
+                            gl.scissor(left, height - bottom, (std::max)(0, right - left), (std::max)(0, bottom - top));
+                        }
+                        else gl.disable(GL_SCISSOR_TEST);
+                        applied_clip = command.clip;
+                    }
+                    gl.uniform_4f(color_uniform, command.color.r, command.color.g, command.color.b, command.color.a);
+                    gl.draw_arrays(GL_TRIANGLES, command.first, command.count);
+                }
+                gl.disable(GL_SCISSOR_TEST);
+            }
+        };
     }
 
-    struct OpenGLRenderer::Impl
+    struct OpenGLRenderer::Impl : GpuSurface
     {
         LibraryModels libraries{};
-        OpenGLFunctions gl{};
         SceneBatch batch{};
+        std::array<GpuSurface, 4> external_surfaces{};
+        std::array<bool, 4> external_attached{};
+        std::array<int, 4> external_width{};
+        std::array<int, 4> external_height{};
+        std::string native_window_status{};
         input::InputTracker input_tracker{};
         input::BorderlessWindowChromeLayout chrome_layout{};
         input::WindowCommand pending_window_command{ input::WindowCommand::none };
+        input::WindowChromeRegion chrome_press{input::WindowChromeRegion::outside};
+        int navigation_press{-1};
+        bool frame_toggle_press{};
         int pending_native_frame_mode{ -1 };
         bool native_frame_enabled{ true };
 
@@ -570,7 +679,6 @@ void main()
         gui::TextControlState static_state{};
         std::string pending_text{};
         std::uint32_t active_text_control{};
-        int pending_workspace_step{};
 
         image::Image demo_image{};
         bool image_fit{ true };
@@ -579,6 +687,18 @@ void main()
         std::uint32_t page{EPOCHGUI_DEMO_LIBRARY_PAGE ? 5u : 0u};
         std::uint32_t display_mode{ 2 };
         std::uint32_t next_focus_order{ 3 };
+        enum class WindowOwner { background, core, rounded, dockable, panel, pane, control };
+        struct WindowTarget
+        {
+            WindowOwner owner{WindowOwner::background};
+            std::uint32_t index{};
+            bool operator==(const WindowTarget&) const = default;
+        };
+        WindowTarget window_capture{};
+        bool window_capture_active{};
+        std::uint64_t window_capture_source{};
+        gui::Vec2 window_press_position{};
+        bool pane_title_pressed{};
         std::array<bool, 4> showcase_open{true, true, true, false};
         float showcase_scroll{};
         bool showcase_scroll_drag{};
@@ -591,18 +711,14 @@ void main()
         std::string edit_status{"WHEEL SCROLLS NOTES. TEXT AND CARET STAY IN THEIR FIELD."};
         float demo_value{0.68f};
         bool show_tips{true};
+        bool library_step_press{};
 
-        GLuint program{};
-        GLuint vertex_array{};
-        GLuint vertex_buffer{};
-        GLint canvas_uniform{ -1 };
-        GLint color_uniform{ -1 };
         int framebuffer_width{ static_cast<int>(canvas_width) };
         int framebuffer_height{ static_cast<int>(canvas_height) };
-        bool initialized{};
 
         Impl()
         {
+            input_tracker.enable_ordered_events();
             reset_windows();
             rebuild_chrome();
             reset_docking();
@@ -682,48 +798,6 @@ void main()
             return { x * canvas_width / width, y * canvas_height / height };
         }
 
-        void release() noexcept
-        {
-            if (vertex_buffer != 0)
-                gl.delete_buffers(1, &vertex_buffer);
-            if (vertex_array != 0)
-                gl.delete_vertex_arrays(1, &vertex_array);
-            if (program != 0)
-                gl.delete_program(program);
-            vertex_buffer = 0;
-            vertex_array = 0;
-            program = 0;
-            initialized = false;
-        }
-
-        [[nodiscard]] bool initialize(OpenGLProcLoader loader) noexcept
-        {
-            if (initialized)
-                return true;
-            if (!gl.load(loader))
-                return false;
-            program = create_program(gl);
-            if (program == 0)
-                return false;
-            canvas_uniform = gl.get_uniform_location(program, "uCanvas");
-            color_uniform = gl.get_uniform_location(program, "uColor");
-            if (canvas_uniform < 0 || color_uniform < 0)
-            {
-                release();
-                return false;
-            }
-            gl.gen_vertex_arrays(1, &vertex_array);
-            gl.bind_vertex_array(vertex_array);
-            gl.gen_buffers(1, &vertex_buffer);
-            gl.bind_buffer(GL_ARRAY_BUFFER, vertex_buffer);
-            gl.enable_vertex_attrib_array(0);
-            gl.vertex_attrib_pointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(gui::Vec2), nullptr);
-            initialized = vertex_array != 0 && vertex_buffer != 0;
-            if (!initialized)
-                release();
-            return initialized;
-        }
-
         [[nodiscard]] gui::Rect content_area() const noexcept
         {
             return { { sidebar_width, workspace_top }, { canvas_width - sidebar_width, canvas_height - workspace_top } };
@@ -750,76 +824,145 @@ void main()
             state.position.y = (std::max)(workspace_top + 8.0f, state.position.y);
         }
 
-        [[nodiscard]] int press_target(const input::InputFrame& frame) const noexcept
+        void clamp_window_layout(gui::FloatingWindowState& state, gui::FloatingWindowLayout& layout,
+            gui::Vec2 pointer) noexcept
         {
-            if (!frame.pointer(input::PointerButton::left).pressed)
-                return 0;
-            if (context_layout.visible && gui::contains(context_layout.popup, frame.pointer_position))
-                return 0;
-            const bool core_visible = core_window.open && display_mode != 1;
-            const bool rounded_visible = rounded_window.open && display_mode != 0;
-            const bool in_core = core_visible && gui::contains({ core_window.position, core_window.size }, frame.pointer_position);
-            const bool in_rounded = rounded_visible && gui::contains({ rounded_window.position, rounded_window.size }, frame.pointer_position);
-            if (in_core && in_rounded)
-                return core_window.focus_order > rounded_window.focus_order ? 1 : 2;
-            if (in_core)
-                return 1;
-            if (in_rounded)
-                return 2;
-            return 0;
+            clamp_to_workspace(state);
+            const gui::Vec2 delta{state.position.x - layout.window.position.x,
+                                  state.position.y - layout.window.position.y};
+            for (auto* rect : {&layout.window, &layout.title_bar, &layout.content, &layout.close_button, &layout.resize_handle})
+            {
+                rect->position.x += delta.x;
+                rect->position.y += delta.y;
+            }
+            layout.hovered = gui::contains(layout.window, pointer);
+            layout.title_hovered = gui::contains(layout.title_bar, pointer);
+            layout.close_hovered = gui::contains(layout.close_button, pointer);
+            layout.resize_hovered = gui::contains(layout.resize_handle, pointer);
         }
 
-        void update_floating_windows(const input::InputFrame& frame) noexcept
+        void cancel_window_pointer() noexcept
         {
-            const int target = press_target(frame);
-            const gui::FloatingWindowInput actual = input::floating_window_input(frame);
-            gui::FloatingWindowInput core_input = actual;
-            gui::FloatingWindowInput rounded_input = actual;
+            window_capture_active = false;
+            pane_title_pressed = false;
+            navigation_press = -1;
+            frame_toggle_press = false;
+            chrome_press = input::WindowChromeRegion::outside;
+            for (auto* state : {&core_window, &rounded_window, &dockable_state.floating, &panel_host_state.floating})
+                state->dragging = state->resizing = state->close_pressed = false;
+        }
 
-            const bool core_captured = core_window.dragging
-                || core_window.resizing
-                || core_window.close_pressed
-                || target == 1;
-            const bool rounded_captured = rounded_window.dragging
-                || rounded_window.resizing
-                || rounded_window.close_pressed
-                || target == 2;
-            if (!core_captured)
-                core_input = { .mouse_position = actual.mouse_position };
-            if (!rounded_captured)
-                rounded_input = { .mouse_position = actual.mouse_position };
+        void cancel_input_state() noexcept
+        {
+            input_tracker.reset();
+            cancel_window_pointer();
+            pending_text.clear();
+            text_drag = false;
+            showcase_scroll_drag = false;
+            library_step_press = false;
+            context_popup.open = false;
+            context_layout.visible = false;
+            pending_window_command = input::WindowCommand::none;
+        }
 
+        void drain_input()
+        {
+            if (input_tracker.events_overflowed())
+            {
+                cancel_input_state();
+                edit_status = "INPUT QUEUE FULL. THE GESTURE WAS CANCELLED.";
+                return;
+            }
+            input::InputFrame event;
+            while (input_tracker.next_event_frame(event)) update_ui(event);
+            if (input_tracker.events_overflowed())
+            {
+                cancel_input_state();
+                edit_status = "INPUT QUEUE FULL. THE GESTURE WAS CANCELLED.";
+                return;
+            }
+            if (!pending_text.empty()) update_ui(input_tracker.frame());
+        }
+
+        void flush_text_before_input()
+        {
+            // Text stays consumer-owned. Drain earlier events before changing focus or keys.
+            if (!pending_text.empty()) drain_input();
+        }
+
+        [[nodiscard]] static gui::Rect window_control_rect(std::uint32_t index) noexcept
+        {
+            if (index < 3) return gui::segmented_control_item_layout(window_mode_options(), index);
+            if (index < 6) return {{246.0f + (index - 3) * 150.0f, 704.0f}, {142.0f, 30.0f}};
+            return {{970.0f, 704.0f}, {220.0f, 30.0f}};
+        }
+
+        [[nodiscard]] WindowTarget window_target_at(gui::Vec2 point, std::uint64_t source = 0) const noexcept
+        {
+            if (source != 0)
+            {
+                if (source > external_attached.size() || !external_attached[source - 1]) return {};
+                if (source <= 3) return {WindowOwner::pane, static_cast<std::uint32_t>(source - 1)};
+                return {WindowOwner::dockable};
+            }
+            // Reverse the actual painter order: actions, hosted panels, floaters, then dock panes.
+            for (std::uint32_t index = 3; index < 7; ++index)
+                if (gui::contains(window_control_rect(index), point)) return {WindowOwner::control, index};
+            if (panel_host_result.metadata.visible && gui::contains(panel_host_result.metadata.frame, point))
+                return {WindowOwner::panel};
+            if (!external_attached[3] && dockable_result.chrome.visible && gui::contains(dockable_result.chrome.frame, point))
+                return {WindowOwner::dockable};
+            const bool core = core_window.open && display_mode != 1 && gui::contains({core_window.position, core_window.size}, point);
+            const bool rounded = rounded_window.open && display_mode != 0 && gui::contains({rounded_window.position, rounded_window.size}, point);
+            if (core && (!rounded || core_window.focus_order >= rounded_window.focus_order)) return {WindowOwner::core};
+            if (rounded) return {WindowOwner::rounded};
+            for (const bool popped_out : {true, false})
+                for (std::size_t index = dock_panes.size(); index-- > 0;)
+                {
+                    const auto& pane = dock_panes[index];
+                    if (external_attached[index] || pane.popped_out != popped_out) continue;
+                    const auto layout = gui::make_dock_pane_layout(pane, pane_options(pane), {});
+                    if (layout.visible && gui::contains(layout.frame, point))
+                        return {WindowOwner::pane, static_cast<std::uint32_t>(index)};
+                }
+            for (std::uint32_t index = 0; index < 3; ++index)
+                if (gui::contains(window_control_rect(index), point)) return {WindowOwner::control, index};
+            return {};
+        }
+
+        [[nodiscard]] input::InputFrame window_input(const input::InputFrame& frame, WindowTarget target) const noexcept
+        {
+            auto routed = frame;
+            const auto owner = window_capture_active ? window_capture : window_target_at(frame.pointer_position, frame.input_source);
+            if (owner != target)
+            {
+                routed.pointer_buttons = {};
+                routed.wheel_delta = {};
+                routed.pointer_position = {-10000.0f, -10000.0f};
+            }
+            return routed;
+        }
+
+        void update_floating_windows(const input::InputFrame& core_frame, const input::InputFrame& rounded_frame) noexcept
+        {
             clamp_to_workspace(core_window);
             clamp_to_workspace(rounded_window);
             if (display_mode != 1)
             {
-                core_layout = gui::update_floating_window(
-                    core_window,
-                    floating_options({ 320.0f, 250.0f }, { 390.0f, 250.0f }),
-                    core_input);
-                clamp_to_workspace(core_window);
-                if (core_layout.focused)
-                    core_window.focus_order = next_focus_order++;
+                core_layout = gui::update_floating_window(core_window,
+                    floating_options({320.0f, 250.0f}, {390.0f, 250.0f}), input::floating_window_input(core_frame));
+                clamp_window_layout(core_window, core_layout, core_frame.pointer_position);
+                if (core_layout.focused) core_window.focus_order = next_focus_order++;
             }
-            else
-            {
-                core_layout = {};
-            }
-
+            else core_layout = {};
             if (display_mode != 0)
             {
-                rounded_layout = gui::update_floating_window(
-                    rounded_window,
-                    floating_options({ 690.0f, 360.0f }, { 410.0f, 272.0f }),
-                    rounded_input);
-                clamp_to_workspace(rounded_window);
-                if (rounded_layout.focused)
-                    rounded_window.focus_order = next_focus_order++;
+                rounded_layout = gui::update_floating_window(rounded_window,
+                    floating_options({690.0f, 360.0f}, {410.0f, 272.0f}), input::floating_window_input(rounded_frame));
+                clamp_window_layout(rounded_window, rounded_layout, rounded_frame.pointer_position);
+                if (rounded_layout.focused) rounded_window.focus_order = next_focus_order++;
             }
-            else
-            {
-                rounded_layout = {};
-            }
+            else rounded_layout = {};
         }
 
         void update_navigation(const input::InputFrame& frame) noexcept
@@ -832,24 +975,33 @@ void main()
                 .height = 32.0f,
                 .gap = 4.0f
             };
-            if (frame.pointer(input::PointerButton::left).released)
+            const auto item = gui::segmented_control_item_at(options, frame.pointer_position);
+            int target = item < pages.size() ? static_cast<int>(item) : -1;
+            for (std::size_t index = 0; index < showcase_open.size(); ++index)
+                if (gui::contains({{14.0f, 180.0f + static_cast<float>(index) * 52.0f}, {186.0f, 42.0f}}, frame.pointer_position))
+                    target = static_cast<int>(pages.size() + index);
+            const auto& left = frame.pointer(input::PointerButton::left);
+            if (left.pressed) navigation_press = target;
+            if (left.released)
             {
-                const std::uint32_t item = gui::segmented_control_item_at(options, frame.pointer_position);
-                if (item < pages.size())
+                if (target >= 0 && target == navigation_press)
                 {
-                    page = pages[item];
-                    active_text_control = 0;
-                    edit_state.focused = multiline_state.focused = static_state.focused = false;
+                    if (target < static_cast<int>(pages.size()))
+                    {
+                        page = pages[static_cast<std::size_t>(target)];
+                        active_text_control = 0;
+                        edit_state.focused = multiline_state.focused = static_state.focused = false;
+                    }
+                    else
+                    {
+                        const auto index = static_cast<std::size_t>(target) - pages.size();
+                        page = 0;
+                        showcase_open[index] = true;
+                        showcase_scroll += section_header(index).position.y - showcase_viewport().position.y;
+                        showcase_scroll = (std::max)(0.0f, showcase_scroll);
+                    }
                 }
-                for (std::size_t index = 0; index < showcase_open.size(); ++index)
-                {
-                    if (!gui::contains({{14.0f, 180.0f + static_cast<float>(index) * 52.0f}, {186.0f, 42.0f}}, frame.pointer_position))
-                        continue;
-                    page = 0;
-                    showcase_open[index] = true;
-                    showcase_scroll += section_header(index).position.y - showcase_viewport().position.y;
-                    showcase_scroll = (std::max)(0.0f, showcase_scroll);
-                }
+                navigation_press = -1;
             }
         }
 
@@ -942,8 +1094,9 @@ void main()
         void update_frame_toggle(const input::InputFrame& frame) noexcept
         {
             if (EPOCHGUI_DEMO_PLATFORM_HOSTED) return;
-            if (frame.pointer(input::PointerButton::left).released
-                && gui::contains(frame_toggle_rect(), frame.pointer_position))
+            const auto& left = frame.pointer(input::PointerButton::left);
+            if (left.pressed) frame_toggle_press = gui::contains(frame_toggle_rect(), frame.pointer_position);
+            if (left.released && frame_toggle_press && gui::contains(frame_toggle_rect(), frame.pointer_position))
             {
                 native_frame_enabled = !native_frame_enabled;
                 pending_native_frame_mode = native_frame_enabled ? 1 : 0;
@@ -982,17 +1135,6 @@ void main()
             options.workspace.position.x = left;
             options.workspace.size.x = (std::max)(1.0f, right - left);
             return options;
-        }
-
-        void update_display_mode(const input::InputFrame& frame) noexcept
-        {
-            const auto options = window_mode_options();
-            if (frame.pointer(input::PointerButton::left).released)
-            {
-                const std::uint32_t item = gui::segmented_control_item_at(options, frame.pointer_position);
-                if (item != gui::invalid_selectable_row_index)
-                    display_mode = item;
-            }
         }
 
         void update_overview(const input::InputFrame& frame) noexcept
@@ -1037,49 +1179,9 @@ void main()
             }
         }
 
-        void update_windows_page(const input::InputFrame& frame) noexcept
+        [[nodiscard]] gui::DockableWindowOptions hosted_options() const noexcept
         {
-            update_display_mode(frame);
-            update_floating_windows(frame);
-
-            const auto options = window_dock_options();
-            gui::DockLayoutInput dock_input{
-                .mouse_position = frame.pointer_position,
-                .mouse_pressed = frame.pointer(input::PointerButton::left).pressed,
-                .mouse_released = frame.pointer(input::PointerButton::left).released
-            };
-            if (frame.pointer(input::PointerButton::left).released)
-            {
-                bool chosen = false;
-                for (const bool popped_out : {true, false})
-                for (std::size_t index = dock_panes.size(); index-- > 0;)
-                {
-                    const auto& pane = dock_panes[index];
-                    if (chosen || pane.popped_out != popped_out) continue;
-                    const auto layout = gui::make_dock_pane_layout(pane, pane_options(pane), dock_input);
-                    if (gui::contains(layout.title_bar, frame.pointer_position))
-                    {
-                        dock_input.toggle_popout_pane_id = pane.id;
-                        chosen = true;
-                    }
-                }
-            }
-            (void)gui::update_dock_layout(dock_state, dock_panes.data(), static_cast<std::uint32_t>(dock_panes.size()), options, dock_input);
-
-            const gui::Rect dock_button{ { 246.0f, 704.0f }, { 142.0f, 30.0f } };
-            const gui::Rect float_button{ { 396.0f, 704.0f }, { 142.0f, 30.0f } };
-            const gui::Rect detach_button{ { 546.0f, 704.0f }, { 142.0f, 30.0f } };
-            gui::DockableWindowAction action = gui::DockableWindowAction::none;
-            if (frame.pointer(input::PointerButton::left).released)
-            {
-                if (gui::contains(dock_button, frame.pointer_position)) action = gui::DockableWindowAction::dock;
-                else if (gui::contains(float_button, frame.pointer_position)) action = gui::DockableWindowAction::float_window;
-                else if (gui::contains(detach_button, frame.pointer_position)) action = gui::DockableWindowAction::detach;
-            }
-            dockable_result = gui::update_dockable_window(
-                dockable_host,
-                dockable_state,
-                {
+            gui::DockableWindowOptions options = {
                     .title = "DOCKABLE",
                     .docked_frame = { { 720.0f, 590.0f }, { 230.0f, 142.0f } },
                     .floating = floating_options({ 720.0f, 590.0f }, { 230.0f, 142.0f }),
@@ -1093,24 +1195,90 @@ void main()
                     .allow_detach = true,
                     .allow_close = true,
                     .fallback_dock_slot = gui::DockSlot::right
-                },
+                };
+            if (external_attached[3])
+            {
+                // The native host owns move/resize. GUI chrome still owns Dock/Float/Close.
+                options.floating.viewport_size = {};
+                options.floating.movable = false;
+                options.floating.resizable = false;
+                options.viewport_size = {};
+            }
+            return options;
+        }
+
+        void update_windows_page(const input::InputFrame& frame) noexcept
+        {
+            if (window_capture_active && window_capture_source != frame.input_source) cancel_window_pointer();
+            const auto& left = frame.pointer(input::PointerButton::left);
+            if (left.pressed && !window_capture_active)
+            {
+                window_capture = window_target_at(frame.pointer_position, frame.input_source);
+                window_capture_source = frame.input_source;
+                window_capture_active = true;
+                window_press_position = frame.pointer_position;
+                pane_title_pressed = false;
+                if (window_capture.owner == WindowOwner::pane)
                 {
-                    .mouse_position = frame.pointer_position,
-                    .mouse_down = frame.pointer(input::PointerButton::left).down,
-                    .mouse_pressed = frame.pointer(input::PointerButton::left).pressed,
-                    .mouse_released = frame.pointer(input::PointerButton::left).released,
+                    const auto& pane = dock_panes[window_capture.index];
+                    pane_title_pressed = gui::contains(gui::make_dock_pane_layout(pane, pane_options(pane), {}).title_bar,
+                        frame.pointer_position);
+                }
+            }
+            const auto control_released = [&](std::uint32_t index) {
+                return window_capture_active && window_capture == WindowTarget{WindowOwner::control, index}
+                    && left.released && gui::contains(window_control_rect(index), frame.pointer_position);
+            };
+            for (std::uint32_t index = 0; index < 3; ++index)
+                if (control_released(index)) display_mode = index;
+            update_floating_windows(window_input(frame, {WindowOwner::core}), window_input(frame, {WindowOwner::rounded}));
+
+            const auto options = window_dock_options();
+            auto pane_frame = frame;
+            if (!window_capture_active || window_capture.owner != WindowOwner::pane)
+            {
+                pane_frame.pointer_buttons = {};
+                pane_frame.pointer_position = {-10000.0f, -10000.0f};
+            }
+            gui::DockLayoutInput dock_input{
+                .mouse_position = pane_frame.pointer_position,
+                .mouse_pressed = pane_frame.pointer(input::PointerButton::left).pressed,
+                .mouse_released = pane_frame.pointer(input::PointerButton::left).released};
+            if (window_capture_active && window_capture.owner == WindowOwner::pane)
+            {
+                const auto& pane = dock_panes[window_capture.index];
+                if (left.pressed) dock_input.activate_pane_id = pane.id;
+                const float dx = frame.pointer_position.x - window_press_position.x;
+                const float dy = frame.pointer_position.y - window_press_position.y;
+                if (left.released && pane_title_pressed && dx * dx + dy * dy <= 25.0f
+                    && gui::contains(gui::make_dock_pane_layout(pane, pane_options(pane), {}).title_bar, frame.pointer_position))
+                    dock_input.toggle_popout_pane_id = pane.id;
+            }
+            (void)gui::update_dock_layout(dock_state, dock_panes.data(), static_cast<std::uint32_t>(dock_panes.size()), options, dock_input);
+
+            gui::DockableWindowAction action = gui::DockableWindowAction::none;
+            if (control_released(3)) action = gui::DockableWindowAction::dock;
+            else if (control_released(4)) action = gui::DockableWindowAction::float_window;
+            else if (control_released(5)) action = gui::DockableWindowAction::detach;
+            const auto hosted_frame = window_input(frame, {WindowOwner::dockable});
+            dockable_result = gui::update_dockable_window(
+                dockable_host,
+                dockable_state,
+                hosted_options(),
+                {
+                    .mouse_position = hosted_frame.pointer_position,
+                    .mouse_down = hosted_frame.pointer(input::PointerButton::left).down,
+                    .mouse_pressed = hosted_frame.pointer(input::PointerButton::left).pressed,
+                    .mouse_released = hosted_frame.pointer(input::PointerButton::left).released,
                     .requested_action = action
                 });
 
             gui::PanelHostAction panel_action = gui::PanelHostAction::none;
             const gui::Rect panel_button{ { 970.0f, 704.0f }, { 220.0f, 30.0f } };
-            if (frame.pointer(input::PointerButton::left).released
-                && gui::contains(panel_button, frame.pointer_position))
-            {
+            if (control_released(6))
                 panel_action = panel_host_state.mode == gui::PanelHostMode::docked
-                    ? gui::PanelHostAction::float_panel
-                    : gui::PanelHostAction::dock;
-            }
+                    ? gui::PanelHostAction::float_panel : gui::PanelHostAction::dock;
+            const auto panel_frame = window_input(frame, {WindowOwner::panel});
             panel_host_result = gui::update_panel_host(
                 panel_host_state,
                 {
@@ -1132,13 +1300,14 @@ void main()
                 },
                 {
                     .focus_host = &dockable_host,
-                    .mouse_position = frame.pointer_position,
-                    .mouse_down = frame.pointer(input::PointerButton::left).down,
-                    .mouse_pressed = frame.pointer(input::PointerButton::left).pressed,
-                    .mouse_released = frame.pointer(input::PointerButton::left).released,
+                    .mouse_position = panel_frame.pointer_position,
+                    .mouse_down = panel_frame.pointer(input::PointerButton::left).down,
+                    .mouse_pressed = panel_frame.pointer(input::PointerButton::left).pressed,
+                    .mouse_released = panel_frame.pointer(input::PointerButton::left).released,
                     .requested_action = panel_action,
                     .escape_pressed = frame.key(input::Key::escape).pressed
                 });
+            if (left.released) window_capture_active = false;
         }
 
         [[nodiscard]] static gui::Rect text_rect(std::uint32_t id) noexcept
@@ -1264,22 +1433,26 @@ void main()
             if (!left.down) text_drag = false;
             if (!pending_text.empty()) apply_text_command(*active, options, gui::TextControlCommand::insert_text, pending_text);
             pending_text.clear();
+            const auto key_triggered = [&](input::Key key) {
+                const auto& state = frame.key(key);
+                return state.pressed || state.repeated;
+            };
             const bool extend = frame.modifiers.shift;
-            if (frame.key(input::Key::backspace).pressed) apply_text_command(*active, options, gui::TextControlCommand::erase_backward);
-            if (frame.key(input::Key::delete_key).pressed) apply_text_command(*active, options, gui::TextControlCommand::erase_forward);
-            if (frame.key(input::Key::arrow_left).pressed) apply_text_command(*active, options,
+            if (key_triggered(input::Key::backspace)) apply_text_command(*active, options, gui::TextControlCommand::erase_backward);
+            if (key_triggered(input::Key::delete_key)) apply_text_command(*active, options, gui::TextControlCommand::erase_forward);
+            if (key_triggered(input::Key::arrow_left)) apply_text_command(*active, options,
                 frame.modifiers.control ? gui::TextControlCommand::move_word_left : gui::TextControlCommand::move_left, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::arrow_right).pressed) apply_text_command(*active, options,
+            if (key_triggered(input::Key::arrow_right)) apply_text_command(*active, options,
                 frame.modifiers.control ? gui::TextControlCommand::move_word_right : gui::TextControlCommand::move_right, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::arrow_up).pressed) apply_text_command(*active, options, gui::TextControlCommand::move_up, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::arrow_down).pressed) apply_text_command(*active, options, gui::TextControlCommand::move_down, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::home).pressed) apply_text_command(*active, options,
+            if (key_triggered(input::Key::arrow_up)) apply_text_command(*active, options, gui::TextControlCommand::move_up, {}, gui::invalid_text_index, extend);
+            if (key_triggered(input::Key::arrow_down)) apply_text_command(*active, options, gui::TextControlCommand::move_down, {}, gui::invalid_text_index, extend);
+            if (key_triggered(input::Key::home)) apply_text_command(*active, options,
                 frame.modifiers.control ? gui::TextControlCommand::move_document_start : gui::TextControlCommand::move_line_start, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::end).pressed) apply_text_command(*active, options,
+            if (key_triggered(input::Key::end)) apply_text_command(*active, options,
                 frame.modifiers.control ? gui::TextControlCommand::move_document_end : gui::TextControlCommand::move_line_end, {}, gui::invalid_text_index, extend);
-            if (frame.key(input::Key::enter).pressed && active_text_control == 2)
+            if (key_triggered(input::Key::enter) && active_text_control == 2)
                 apply_text_command(*active, options, gui::TextControlCommand::insert_text, "\n");
-            if (frame.key(input::Key::tab).pressed && active_text_control == 2 && !frame.modifiers.control)
+            if (key_triggered(input::Key::tab) && active_text_control == 2 && !frame.modifiers.control)
                 apply_text_command(*active, options, gui::TextControlCommand::insert_text, "\t");
             if (left.released)
                 for (int command = 0; command < 6; ++command)
@@ -1387,30 +1560,45 @@ void main()
             }
         }
 
-        void update_ui()
+        void update_ui(const input::InputFrame& frame)
         {
-            const input::InputFrame& frame = input_tracker.frame();
-            if (pending_workspace_step != 0)
+            if (frame.input_source != 0)
+            {
+                if (frame.input_source <= external_attached.size() && external_attached[frame.input_source - 1])
+                    update_windows_page(frame);
+                return;
+            }
+            if (frame.key(input::Key::tab).pressed && frame.modifiers.control)
             {
                 constexpr std::array<std::uint32_t, 3> pages{0, 1, 5};
                 const auto current = std::find(pages.begin(), pages.end(), page);
                 const std::size_t index = current == pages.end() ? 0u : static_cast<std::size_t>(current - pages.begin());
-                page = pages[(index + (pending_workspace_step < 0 ? 2u : 1u)) % pages.size()];
-                pending_workspace_step = 0;
+                page = pages[(index + (frame.modifiers.shift ? 2u : 1u)) % pages.size()];
+                cancel_window_pointer();
                 pending_text.clear();
                 active_text_control = 0;
                 edit_state.focused = multiline_state.focused = static_state.focused = false;
                 return;
             }
-            const input::WindowCommand command = input::borderless_window_command(chrome_layout, frame);
-            if (command != input::WindowCommand::none)
-                pending_window_command = command;
             const bool menu_was_open = context_popup.open;
             update_context_menu(frame);
             if (context_popup.open || (menu_was_open && frame.pointer(input::PointerButton::left).released))
-                return;
-            update_navigation(frame);
-            update_frame_toggle(frame);
+            { cancel_window_pointer(); return; }
+            auto chrome_frame = frame;
+            if (page == 1 && window_capture_active && window_capture.owner != WindowOwner::background) chrome_frame.pointer_buttons = {};
+            const auto chrome_hit = input::hit_test_borderless_window_chrome(chrome_layout, chrome_frame.pointer_position);
+            if (chrome_frame.pointer(input::PointerButton::left).pressed) chrome_press = chrome_hit;
+            const input::WindowCommand command = chrome_hit == chrome_press
+                ? input::borderless_window_command(chrome_layout, chrome_frame) : input::WindowCommand::none;
+            if (frame.pointer(input::PointerButton::left).released) chrome_press = input::WindowChromeRegion::outside;
+            if (command != input::WindowCommand::none)
+                pending_window_command = command;
+            auto navigation_frame = frame;
+            if (page == 1 && window_capture_active && window_capture.owner != WindowOwner::background) navigation_frame.pointer_buttons = {};
+            const auto previous_page = page;
+            update_navigation(navigation_frame);
+            if (previous_page != page) cancel_window_pointer();
+            update_frame_toggle(navigation_frame);
 
             switch (page)
             {
@@ -1419,7 +1607,18 @@ void main()
             case 2: update_text_page(frame); break;
             case 3: update_image_page(frame); break;
             case 4: break;
-            case 5: break; // Libraries updates its controls while building the page.
+            case 5:
+            {
+                const bool hover = gui::contains({{246.0f, 350.0f}, {220.0f, 36.0f}}, frame.pointer_position);
+                const auto& left = frame.pointer(input::PointerButton::left);
+                if (left.pressed) library_step_press = hover;
+                if (left.released)
+                {
+                    if (library_step_press && hover) (void)libraries.step();
+                    library_step_press = false;
+                }
+                break;
+            }
             default: page = 0; break;
             }
 
@@ -1667,52 +1866,18 @@ void main()
             draw_surface(batch, layout.resize_handle, true, 4.0f, layout.resize_hovered ? accent : panel_border, panel_border, 0.0f);
         }
 
-        void draw_windows_page(const input::InputFrame& frame)
+        void draw_dock_pane(std::size_t index)
         {
-            draw_text(batch, 246.0f, 140.0f, "WINDOWING AND HOSTING", 1.8f, text_primary);
-            constexpr std::array<std::string_view, 3> labels{"RECT", "ROUNDED", "BOTH"};
-            const auto mode_options = window_mode_options();
-            for (std::uint32_t index = 0; index < labels.size(); ++index)
-            {
-                const gui::Rect item = gui::segmented_control_item_layout(mode_options, index);
-                draw_surface(batch, item, true, 7.0f,
-                    display_mode == index ? control_selected : gui::contains(item, frame.pointer_position) ? control_hover : control_fill,
-                    display_mode == index ? accent : panel_border,
-                    1.0f);
-                draw_text(batch, item.position.x + 16.0f, item.position.y + 11.0f, labels[index], 1.25f,
-                    display_mode == index ? text_primary : text_secondary);
-            }
+            constexpr std::array<std::string_view, 3> pane_names{"TREE", "VIEWPORT", "INSPECTOR"};
+            const auto pane = gui::make_dock_pane_layout(dock_panes[index], pane_options(dock_panes[index]), {});
+            if (!pane.visible) return;
+            draw_surface(batch, pane.frame, true, 8.0f, pane.active ? control_selected : panel_fill, pane.active ? accent : panel_border, 1.0f);
+            draw_surface(batch, pane.title_bar, true, 7.0f, control_fill, panel_border, 0.0f);
+            draw_text(batch, pane.title_bar.position.x + 8.0f, pane.title_bar.position.y + 9.0f, pane_names[index], 1.15f, text_secondary);
+        }
 
-            const gui::DockLayoutInput dock_input{ .mouse_position = frame.pointer_position };
-            constexpr std::array<std::string_view, 3> pane_names{ "TREE", "VIEWPORT", "INSPECTOR" };
-            draw_text(batch, 246.0f, 400.0f, "CLICK DOCK PANE TITLE TO POPOUT OR REDOCK", 1.15f, text_muted);
-            for (const bool popped_out : {false, true})
-            for (std::size_t index = 0; index < dock_panes.size(); ++index)
-            {
-                if (dock_panes[index].popped_out != popped_out) continue;
-                const gui::DockPaneLayout pane = gui::make_dock_pane_layout(dock_panes[index], pane_options(dock_panes[index]), dock_input);
-                if (!pane.visible)
-                    continue;
-                draw_surface(batch, pane.frame, true, 8.0f, pane.active ? control_selected : panel_fill, pane.active ? accent : panel_border, 1.0f);
-                draw_surface(batch, pane.title_bar, true, 7.0f, control_fill, panel_border, 0.0f);
-                draw_text(batch, pane.title_bar.position.x + 8.0f, pane.title_bar.position.y + 9.0f, pane_names[index], 1.15f, text_secondary);
-            }
-
-            const bool core_visible = core_window.open && display_mode != 1;
-            const bool rounded_visible = rounded_window.open && display_mode != 0;
-            const bool core_active = core_visible && (!rounded_visible || core_window.focus_order >= rounded_window.focus_order);
-            if (core_active)
-            {
-                draw_floating_window(rounded_window, rounded_layout, true, false);
-                draw_floating_window(core_window, core_layout, false, true);
-            }
-            else
-            {
-                draw_floating_window(core_window, core_layout, false, false);
-                draw_floating_window(rounded_window, rounded_layout, true, rounded_visible);
-            }
-
-            // Present the same Gui-owned frames that receive actions and hit tests.
+        void draw_hosted_window()
+        {
             const auto& hosted = dockable_result.chrome;
             if (hosted.visible)
             {
@@ -1737,8 +1902,49 @@ void main()
                 draw_text(batch, hosted.content.position.x + 8.0f, hosted.content.position.y + 12.0f,
                     mode, 1.2f, text_primary);
                 draw_text(batch, hosted.content.position.x + 8.0f, hosted.content.position.y + 36.0f,
-                    "GUI GEOMETRY ONLY", 1.0f, text_secondary);
+                    external_attached[3] ? "NATIVE WINDOW" : "GUI GEOMETRY ONLY", 1.0f, text_secondary);
             }
+        }
+
+        void draw_windows_page(const input::InputFrame& frame)
+        {
+            draw_text(batch, 246.0f, 140.0f, "WINDOWING AND HOSTING", 1.8f, text_primary);
+            constexpr std::array<std::string_view, 3> labels{"RECT", "ROUNDED", "BOTH"};
+            const auto mode_options = window_mode_options();
+            for (std::uint32_t index = 0; index < labels.size(); ++index)
+            {
+                const gui::Rect item = gui::segmented_control_item_layout(mode_options, index);
+                draw_surface(batch, item, true, 7.0f,
+                    display_mode == index ? control_selected : gui::contains(item, frame.pointer_position) ? control_hover : control_fill,
+                    display_mode == index ? accent : panel_border,
+                    1.0f);
+                draw_text(batch, item.position.x + 16.0f, item.position.y + 11.0f, labels[index], 1.25f,
+                    display_mode == index ? text_primary : text_secondary);
+            }
+
+            draw_text(batch, 246.0f, 400.0f, "CLICK DOCK PANE TITLE TO POPOUT OR REDOCK", 1.15f, text_muted);
+            for (const bool popped_out : {false, true})
+            for (std::size_t index = 0; index < dock_panes.size(); ++index)
+            {
+                if (dock_panes[index].popped_out != popped_out) continue;
+                if (!external_attached[index]) draw_dock_pane(index);
+            }
+
+            const bool core_visible = core_window.open && display_mode != 1;
+            const bool rounded_visible = rounded_window.open && display_mode != 0;
+            const bool core_active = core_visible && (!rounded_visible || core_window.focus_order >= rounded_window.focus_order);
+            if (core_active)
+            {
+                draw_floating_window(rounded_window, rounded_layout, true, false);
+                draw_floating_window(core_window, core_layout, false, true);
+            }
+            else
+            {
+                draw_floating_window(core_window, core_layout, false, false);
+                draw_floating_window(rounded_window, rounded_layout, true, rounded_visible);
+            }
+
+            if (!external_attached[3]) draw_hosted_window();
             const auto& panel = panel_host_result.metadata;
             if (panel.visible)
             {
@@ -1767,6 +1973,7 @@ void main()
             const gui::Rect panel_button{ { 970.0f, 704.0f }, { 220.0f, 30.0f } };
             draw_surface(batch, panel_button, true, 7.0f, control_fill, panel_border, 1.0f);
             draw_text(batch, panel_button.position.x + 16.0f, panel_button.position.y + 10.0f, "TOGGLE PANEL HOST", 1.15f, text_secondary);
+            if (!native_window_status.empty()) draw_text(batch, 246.0f, 764.0f, native_window_status, 1.1f, warning, 980.0f);
         }
 
         void draw_text_control(
@@ -1968,8 +2175,6 @@ void main()
             const bool hover = gui::contains(step, frame.pointer_position);
             draw_surface(batch, step, true, 7.0f, hover ? control_hover : control_fill, panel_border, 1.0f);
             draw_text(batch, 258.0f, 362.0f, "ADVANCE HALF SECOND", 1.2f, text_secondary);
-            if (!context_popup.open && hover && frame.pointer(input::PointerButton::left).released)
-                (void)libraries.step();
             const auto progress = libraries.progress({{246.0f, 402.0f}, {600.0f, 16.0f}});
             batch.append_rect(progress.track, control_fill);
             batch.append_rect(progress.fill, accent);
@@ -2033,6 +2238,7 @@ void main()
         void build_scene()
         {
             batch.clear();
+            batch.pixel_origin = {};
             batch.pixel_scale = {static_cast<float>(framebuffer_width) / canvas_width,
                                  static_cast<float>(framebuffer_height) / canvas_height};
             batch.vertices.reserve(60000);
@@ -2057,53 +2263,57 @@ void main()
             draw_context_menu(frame);
         }
 
+        [[nodiscard]] gui::Rect external_frame(unsigned id) const noexcept
+        {
+            if (id >= 1 && id <= 3)
+            {
+                const auto& pane = dock_panes[id - 1];
+                if (!pane.visible || !pane.popped_out) return {};
+                return gui::make_dock_pane_layout(pane, pane_options(pane), {}).frame;
+            }
+            if (id == 4 && dockable_state.visible && dockable_state.mode == gui::DockableWindowMode::detached)
+                return dockable_result.chrome.frame;
+            return {};
+        }
+
+        [[nodiscard]] bool view_info(unsigned id, ExternalViewInfo& info) const noexcept
+        {
+            if (id == 0 || id > external_attached.size()) return false;
+            const auto rect = external_frame(id);
+            if (rect.size.x <= 0.0f || rect.size.y <= 0.0f) return false;
+            constexpr std::array<std::string_view, 4> titles{"Tree", "Viewport", "Inspector", "Dockable window"};
+            info = {id, titles[id - 1], static_cast<int>(std::ceil(rect.size.x)),
+                static_cast<int>(std::ceil(rect.size.y)), external_attached[id - 1]};
+            return true;
+        }
+
+        [[nodiscard]] bool render_external(unsigned id)
+        {
+            if (id == 0 || id > external_surfaces.size() || !external_attached[id - 1]) return false;
+            drain_input();
+            update_ui(input_tracker.frame());
+            const auto rect = external_frame(id);
+            if (rect.size.x <= 0.0f || rect.size.y <= 0.0f) return false;
+            const int width = external_width[id - 1] > 0 ? external_width[id - 1] : static_cast<int>(rect.size.x);
+            const int height = external_height[id - 1] > 0 ? external_height[id - 1] : static_cast<int>(rect.size.y);
+            batch.clear();
+            batch.pixel_origin = rect.position;
+            batch.pixel_scale = {width / rect.size.x, height / rect.size.y};
+            if (id <= 3) draw_dock_pane(id - 1);
+            else draw_hosted_window();
+            external_surfaces[id - 1].draw_batch(batch, rect, width, height);
+            input_tracker.finish_frame();
+            return true;
+        }
+
         void render()
         {
             if (!initialized)
                 return;
-            update_ui();
+            drain_input();
+            update_ui(input_tracker.frame());
             build_scene();
-            gl.viewport(0, 0, framebuffer_width, framebuffer_height);
-            gl.clear_color(background.r, background.g, background.b, background.a);
-            gl.clear(GL_COLOR_BUFFER_BIT);
-            gl.use_program(program);
-            gl.uniform_2f(canvas_uniform, canvas_width, canvas_height);
-            gl.bind_vertex_array(vertex_array);
-            gl.bind_buffer(GL_ARRAY_BUFFER, vertex_buffer);
-            gl.buffer_data(
-                GL_ARRAY_BUFFER,
-                static_cast<GLsizeiptr>(batch.vertices.size() * sizeof(gui::Vec2)),
-                batch.vertices.empty() ? nullptr : batch.vertices.data(),
-                GL_DYNAMIC_DRAW);
-            std::optional<gui::Rect> applied_clip{};
-            for (const DrawCommand& command : batch.commands)
-            {
-                const bool same_clip = command.clip.has_value() == applied_clip.has_value()
-                    && (!command.clip || (command.clip->position.x == applied_clip->position.x
-                        && command.clip->position.y == applied_clip->position.y
-                        && command.clip->size.x == applied_clip->size.x
-                        && command.clip->size.y == applied_clip->size.y));
-                if (!same_clip)
-                {
-                    if (command.clip)
-                    {
-                        const auto clipped = intersection(*command.clip, {{0.0f, 0.0f}, {canvas_width, canvas_height}});
-                        const float sx = static_cast<float>(framebuffer_width) / canvas_width;
-                        const float sy = static_cast<float>(framebuffer_height) / canvas_height;
-                        const int left = static_cast<int>(std::ceil(clipped.position.x * sx));
-                        const int right = static_cast<int>(std::floor((clipped.position.x + clipped.size.x) * sx));
-                        const int top = static_cast<int>(std::ceil(clipped.position.y * sy));
-                        const int bottom = static_cast<int>(std::floor((clipped.position.y + clipped.size.y) * sy));
-                        gl.enable(GL_SCISSOR_TEST);
-                        gl.scissor(left, framebuffer_height - bottom, (std::max)(0, right - left), (std::max)(0, bottom - top));
-                    }
-                    else gl.disable(GL_SCISSOR_TEST);
-                    applied_clip = command.clip;
-                }
-                gl.uniform_4f(color_uniform, command.color.r, command.color.g, command.color.b, command.color.a);
-                gl.draw_arrays(GL_TRIANGLES, command.first, command.count);
-            }
-            gl.disable(GL_SCISSOR_TEST);
+            draw_batch(batch, {{0.0f, 0.0f}, {canvas_width, canvas_height}}, framebuffer_width, framebuffer_height);
             input_tracker.finish_frame();
         }
     };
@@ -2133,28 +2343,124 @@ void main()
     void OpenGLRenderer::pointer_move(float x, float y) noexcept
     {
         if (impl_)
+        {
+            impl_->flush_text_before_input();
             impl_->input_tracker.set_pointer_position(impl_->to_canvas(x, y));
+        }
     }
 
     void OpenGLRenderer::pointer_button(PointerButton button, bool down) noexcept
     {
         if (impl_)
+        {
+            impl_->flush_text_before_input();
             impl_->input_tracker.set_pointer_button(button, down);
+        }
     }
+
+    void OpenGLRenderer::cancel_input() noexcept
+    {
+        if (impl_) impl_->cancel_input_state();
+    }
+
+    bool OpenGLRenderer::external_view(unsigned id, ExternalViewInfo& info) const noexcept
+    { return impl_ && impl_->view_info(id, info); }
+
+    bool OpenGLRenderer::initialize_view(unsigned id, OpenGLProcLoader loader) noexcept
+    {
+        ExternalViewInfo info;
+        if (!impl_ || !impl_->view_info(id, info) || !impl_->external_surfaces[id - 1].initialize(loader)) return false;
+        impl_->external_attached[id - 1] = true;
+        impl_->external_width[id - 1] = info.width;
+        impl_->external_height[id - 1] = info.height;
+        return true;
+    }
+
+    void OpenGLRenderer::release_view(unsigned id) noexcept
+    {
+        if (!impl_ || id == 0 || id > impl_->external_surfaces.size()) return;
+        impl_->external_surfaces[id - 1].release();
+        impl_->external_attached[id - 1] = false;
+        if (impl_->input_tracker.frame().input_source == id) impl_->cancel_input_state();
+    }
+
+    void OpenGLRenderer::release_primary() noexcept
+    { if (impl_) impl_->release(); }
+
+    void OpenGLRenderer::redock_view(unsigned id) noexcept
+    {
+        if (!impl_ || id == 0 || id > impl_->external_surfaces.size()) return;
+        if (id <= 3)
+        {
+            impl_->dock_panes[id - 1].popped_out = false;
+            impl_->dock_panes[id - 1].popout_context_open = false;
+        }
+        else
+        {
+            impl_->dockable_state.mode = gui::DockableWindowMode::docked;
+            impl_->dockable_state.visible = true;
+        }
+        impl_->cancel_input_state();
+    }
+
+    void OpenGLRenderer::resize_view(unsigned id, int width, int height, float dpi_scale) noexcept
+    {
+        if (!impl_ || id == 0 || id > impl_->external_surfaces.size() || width <= 0 || height <= 0) return;
+        if (!std::isfinite(dpi_scale) || dpi_scale <= 0.0f) dpi_scale = 1.0f;
+        width = (std::min)(width, 16384); height = (std::min)(height, 16384);
+        impl_->external_width[id - 1] = width;
+        impl_->external_height[id - 1] = height;
+        const gui::Vec2 size{width / dpi_scale, height / dpi_scale};
+        if (id <= 3) impl_->dock_panes[id - 1].popout_rect.size = size;
+        else
+        {
+            impl_->dockable_state.floating.size = size;
+            impl_->dockable_result.chrome = gui::DockableWindowController{}.make_chrome(
+                impl_->dockable_state, impl_->hosted_options(), {});
+        }
+    }
+
+    void OpenGLRenderer::set_input_source(unsigned id) noexcept
+    {
+        if (!impl_) return;
+        if (id != 0 && (id > impl_->external_attached.size() || !impl_->external_attached[id - 1])) return;
+        impl_->flush_text_before_input();
+        impl_->input_tracker.set_input_source(id);
+    }
+
+    void OpenGLRenderer::pointer_move_view(unsigned id, float x, float y) noexcept
+    {
+        if (!impl_) return;
+        if (id == 0) { set_input_source(0); pointer_move(x, y); return; }
+        if (id > impl_->external_attached.size() || !impl_->external_attached[id - 1]) return;
+        set_input_source(id);
+        const auto rect = impl_->external_frame(id);
+        const int width = impl_->external_width[id - 1], height = impl_->external_height[id - 1];
+        if (rect.size.x <= 0.0f || rect.size.y <= 0.0f || width <= 0 || height <= 0) return;
+        impl_->input_tracker.set_pointer_position({rect.position.x + x * rect.size.x / width,
+            rect.position.y + y * rect.size.y / height});
+    }
+
+    bool OpenGLRenderer::render_view(unsigned id) noexcept
+    { return impl_ && impl_->render_external(id); }
+
+    void OpenGLRenderer::report_view_error(std::string_view message)
+    { if (impl_) impl_->native_window_status = std::string{message.substr(0, 240)}; }
 
     void OpenGLRenderer::wheel(float horizontal, float vertical) noexcept
     {
         if (impl_)
+        {
+            impl_->flush_text_before_input();
             impl_->input_tracker.add_wheel_delta({ horizontal, vertical });
+        }
     }
 
     void OpenGLRenderer::key(Key key_code, bool down, bool repeated) noexcept
     {
         if (impl_)
         {
-            if (key_code == input::Key::tab && down && !repeated
-                && impl_->input_tracker.frame().modifiers.control)
-                impl_->pending_workspace_step = impl_->input_tracker.frame().modifiers.shift ? -1 : 1;
+            impl_->flush_text_before_input();
             impl_->input_tracker.set_key(key_code, down, repeated);
         }
     }
@@ -2162,18 +2468,32 @@ void main()
     void OpenGLRenderer::modifiers(input::ModifierState state) noexcept
     {
         if (impl_)
+        {
+            impl_->flush_text_before_input();
             impl_->input_tracker.set_modifiers(state);
+        }
     }
 
     void OpenGLRenderer::text_input(std::string_view text)
     {
         if (impl_)
+        {
+            impl_->drain_input();
+            if (text.size() > 65536)
+            {
+                impl_->cancel_input_state();
+                impl_->edit_status = "TEXT INPUT IS TOO LARGE. NOTHING WAS INSERTED.";
+                return;
+            }
             impl_->pending_text.append(text);
+        }
     }
 
     std::string OpenGLRenderer::edit_command(int command, std::string_view pasted_text)
     {
-        return impl_ ? impl_->edit_command(command, pasted_text) : std::string{};
+        if (!impl_) return {};
+        impl_->drain_input();
+        return impl_->edit_command(command, pasted_text);
     }
 
     void OpenGLRenderer::set_clipboard(const char* (*reader)(void*),
