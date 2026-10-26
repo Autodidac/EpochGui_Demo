@@ -17,7 +17,7 @@ NATIVE_CHECKS = ("launch", "controls", "multiline_clip", "windows_docking", "com
 def admit_native_acceptance(path, platform, binary_sha256, source_sha256):
     path = Path(path)
     if path.stat().st_size > 65536:
-        raise ValueError("Native acceptance must be a concise owner receipt")
+        raise ValueError("Native acceptance must be a concise native verification receipt")
     data = json.loads(path.read_text(encoding="utf-8"))
     if (data.get("schema") != "epoch.demo-native-acceptance.v1"
             or data.get("platform") != platform or data.get("binary_sha256") != binary_sha256
@@ -83,10 +83,10 @@ def package(binary, source_zip, platform, output_dir, native_acceptance=None):
             shutil.copytree(project / "assets", stage / "assets")
             shutil.copyfile(project / "LICENSE", stage / "LICENSE")
             shutil.copyfile(project / "THIRD_PARTY_NOTICES.md", stage / "THIRD_PARTY_NOTICES.md")
-            status = "EpochGui demonstration release: exact binary and source have owner-verified native acceptance.\n" if native else \
+            status = "EpochGui demonstration release: exact binary and source have verified native checks.\n" if native else \
                 "EpochGui demonstration candidate: native acceptance has not run.\n"
             gate = "See VALIDATION.json for the accepted checks.\n" if native else \
-                "An owner must test this exact extracted executable before publication.\n"
+                "This exact extracted executable must pass native checks before publication.\n"
             (stage / "README.txt").write_text(status +
                 "Extract the complete folder before running.\n"
                 "The complete project and pinned public libraries are in project/.\n"
@@ -95,7 +95,7 @@ def package(binary, source_zip, platform, output_dir, native_acceptance=None):
             receipt = {"schema": "epoch.demo-release-validation.v1" if native else "epoch.demo-runtime-candidate.v1", "version": version,
                        "source_revision": revision, "platform": platform,
                        "binary_sha256": binary_sha256, "source_archive_sha256": source_sha256,
-                       "native_acceptance": "owner_verified" if native else "not_run",
+                       "native_acceptance": "native_verified" if native else "not_run",
                        "publication": "manual_owner_gate"}
             if native: receipt["native_checks"] = native
             (stage / ("VALIDATION.json" if native else "candidate.json")).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
@@ -120,7 +120,7 @@ if __name__ == "__main__":
     parser.add_argument("--platform", choices=("windows-x64", "linux-x64"), required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--native-acceptance", type=Path,
-                        help="Owner receipt binding all required native checks to this exact binary and source ZIP")
+                        help="Native verification receipt binding all required checks to this exact binary and source ZIP")
     args = parser.parse_args()
     try:
         print(package(args.binary, args.source_zip, args.platform, args.output_dir, args.native_acceptance))

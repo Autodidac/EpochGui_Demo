@@ -91,10 +91,10 @@ class SourcePackage(unittest.TestCase):
                 final = runtime.package(binary, artifact, "windows-x64", demo / "build/runtime-verified-fixture", owner_receipt)
                 with zipfile.ZipFile(final) as archive:
                     validation = json.loads(archive.read("VALIDATION.json"))
-                    self.assertEqual(validation["native_acceptance"], "owner_verified")
+                    self.assertEqual(validation["native_acceptance"], "native_verified")
                     self.assertNotIn("private_log", validation)
                     self.assertNotIn("candidate.json", archive.namelist())
-                    self.assertIn(b"owner-verified", archive.read("README.txt"))
+                    self.assertIn(b"verified native", archive.read("README.txt"))
                 receipt["binary_sha256"] = "0" * 64
                 owner_receipt.write_text(json.dumps(receipt))
                 with self.assertRaisesRegex(ValueError, "exact binary"):
