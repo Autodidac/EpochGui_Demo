@@ -226,6 +226,7 @@ namespace epochengine::gui_demo
             std::vector<gui::Vec2> vertices{};
             std::vector<DrawCommand> commands{};
             gui::Vec2 translation{};
+            gui::Vec2 pixel_scale{1.0f, 1.0f};
             std::optional<gui::Rect> clip{};
 
             void clear()
@@ -254,6 +255,21 @@ namespace epochengine::gui_demo
                 append_triangle({ left, top }, { right, top }, { right, bottom });
                 append_triangle({ left, top }, { right, bottom }, { left, bottom });
                 commands.push_back({ first, 6, color, clip });
+            }
+
+            void append_glyph_pixel(gui::Rect rect, Color color)
+            {
+                // Bitmap cells must cover whole framebuffer pixels. Fractional
+                // quads at the small label scales are unstable under viewport
+                // scaling; clipping geometry and ordinary surfaces stay unchanged.
+                const float left = std::round((rect.position.x + translation.x) * pixel_scale.x);
+                const float top = std::round((rect.position.y + translation.y) * pixel_scale.y);
+                const float right = (std::max)(left + 1.0f,
+                    std::round((rect.position.x + translation.x + rect.size.x) * pixel_scale.x));
+                const float bottom = (std::max)(top + 1.0f,
+                    std::round((rect.position.y + translation.y + rect.size.y) * pixel_scale.y));
+                append_rect({{left / pixel_scale.x - translation.x, top / pixel_scale.y - translation.y},
+                    {(right - left) / pixel_scale.x, (bottom - top) / pixel_scale.y}}, color);
             }
 
             void append_indexed(
@@ -371,7 +387,7 @@ namespace epochengine::gui_demo
                         {
                             if (font::pixel_on(glyph, column, row))
                             {
-                                batch.append_rect({
+                                batch.append_glyph_pixel({
                                     {
                                         cursor_x + static_cast<float>(column) * scale,
                                         cursor_y + static_cast<float>(row) * scale
@@ -1967,6 +1983,8 @@ void main()
         void build_scene()
         {
             batch.clear();
+            batch.pixel_scale = {static_cast<float>(framebuffer_width) / canvas_width,
+                                 static_cast<float>(framebuffer_height) / canvas_height};
             batch.vertices.reserve(60000);
             batch.commands.reserve(5000);
             const input::InputFrame& frame = input_tracker.frame();
