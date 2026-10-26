@@ -168,9 +168,11 @@ int main()
     probe = {290.0f, 180.0f}; // Visible RECT control, not the old hit rectangle 32px above it.
     click(renderer, probe.x, probe.y);
     if (std::abs(probe_color[0] - 49.0f / 255.0f) > 0.001f) return 11;
+    probe = {500.0f, 250.0f}; // Popout title must remain above later docked panes.
     const auto docked_geometry = uploaded;
     click(renderer, 500.0f, 228.0f); // Visible dock title must actually change its layout.
     if (uploaded == docked_geometry) return 12;
+    if (std::abs(probe_color[0] - 27.0f / 255.0f) > 0.001f) return 13;
     if (invalid_clip || clipped || clipped_draws == 0 || draws < clipped_draws) return 7;
     return 0;
 }

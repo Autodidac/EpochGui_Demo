@@ -1662,8 +1662,11 @@ void main()
             const auto dock_options = window_dock_options();
             const gui::DockLayoutInput dock_input{ .mouse_position = frame.pointer_position };
             constexpr std::array<std::string_view, 3> pane_names{ "TREE", "VIEWPORT", "INSPECTOR" };
+            draw_text(batch, 246.0f, 400.0f, "CLICK DOCK PANE TITLE TO POPOUT OR REDOCK", 1.15f, text_muted);
+            for (const bool popped_out : {false, true})
             for (std::size_t index = 0; index < dock_panes.size(); ++index)
             {
+                if (dock_panes[index].popped_out != popped_out) continue;
                 const gui::DockPaneLayout pane = gui::make_dock_pane_layout(dock_panes[index], dock_options, dock_input);
                 if (!pane.visible)
                     continue;
@@ -1671,7 +1674,6 @@ void main()
                 draw_surface(batch, pane.title_bar, true, 7.0f, control_fill, panel_border, 0.0f);
                 draw_text(batch, pane.title_bar.position.x + 8.0f, pane.title_bar.position.y + 9.0f, pane_names[index], 1.15f, text_secondary);
             }
-            draw_text(batch, 246.0f, 400.0f, "CLICK DOCK PANE TITLE TO POPOUT OR REDOCK", 1.15f, text_muted);
 
             const bool core_visible = core_window.open && display_mode != 1;
             const bool rounded_visible = rounded_window.open && display_mode != 0;
@@ -1739,7 +1741,6 @@ void main()
                     1.0f);
                 draw_text(batch, dock_buttons[index].position.x + 18.0f, dock_buttons[index].position.y + 10.0f, dock_labels[index], 1.2f, text_secondary);
             }
-            draw_text(batch, 720.0f, 704.0f, "DOCKABLE MODE", 1.15f, text_muted);
             const gui::Rect panel_button{ { 970.0f, 704.0f }, { 220.0f, 30.0f } };
             draw_surface(batch, panel_button, true, 7.0f, control_fill, panel_border, 1.0f);
             draw_text(batch, panel_button.position.x + 16.0f, panel_button.position.y + 10.0f, "TOGGLE PANEL HOST", 1.15f, text_secondary);
