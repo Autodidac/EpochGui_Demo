@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Runs the actual renderer/controller using a recording GL transport, not a native window.
 #include "epochgui_demo/app_bridge.hpp"
+#include "gui/dock_layout.hpp"
 #include <cstddef>
 #include <algorithm>
 #include <array>
@@ -168,9 +169,25 @@ int main()
     probe = {290.0f, 180.0f}; // Visible RECT control, not the old hit rectangle 32px above it.
     click(renderer, probe.x, probe.y);
     if (std::abs(probe_color[0] - 49.0f / 255.0f) > 0.001f) return 11;
-    probe = {500.0f, 250.0f}; // Popout title must remain above later docked panes.
+    click(renderer, 688.0f, 266.0f); // Close the separate core floater before testing pane stacking.
+    // Compute the title/cascade through the real Gui layout API, not mirrored positioning math.
+    namespace gui = epochengine::gui_lib;
+    gui::DockLayoutState expected_state;
+    gui::DockPaneState expected_tree{.id = 1, .slot = gui::DockSlot::left,
+        .min_size = {120.0f, 90.0f}, .weight = 1.0f, .visible = true};
+    const gui::DockLayoutOptions expected_options{.workspace = {{246.0f, 214.0f}, {970.0f, 176.0f}},
+        .min_pane_size = {96.0f, 64.0f}, .default_popout_size = {300.0f, 190.0f},
+        .edge_fraction = 0.22f, .title_bar_height = 28.0f, .content_padding = 6.0f,
+        .popout_spacing = 22.0f, .visible_margin = 48.0f};
+    gui::normalize_dock_layout(expected_state, &expected_tree, 1, expected_options);
+    const auto dock_title = gui::make_dock_pane_layout(expected_tree, expected_options, {}).title_bar;
+    expected_tree.popped_out = true;
+    const auto popout_title = gui::make_dock_pane_layout(expected_tree, expected_options, {}).title_bar;
+    probe = {popout_title.position.x + popout_title.size.x * 0.75f,
+             popout_title.position.y + popout_title.size.y * 0.5f};
     const auto docked_geometry = uploaded;
-    click(renderer, 500.0f, 228.0f); // Visible dock title must actually change its layout.
+    click(renderer, dock_title.position.x + dock_title.size.x * 0.5f,
+        dock_title.position.y + dock_title.size.y * 0.5f);
     if (uploaded == docked_geometry) return 12;
     if (std::abs(probe_color[0] - 27.0f / 255.0f) > 0.001f) return 13;
     if (invalid_clip || clipped || clipped_draws == 0 || draws < clipped_draws) return 7;

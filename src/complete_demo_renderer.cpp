@@ -964,6 +964,26 @@ void main()
                 .popout_spacing = 22.0f, .visible_margin = 48.0f};
         }
 
+        [[nodiscard]] gui::DockLayoutOptions pane_options(const gui::DockPaneState& pane) const noexcept
+        {
+            auto options = window_dock_options();
+            if (pane.slot != gui::DockSlot::center || pane.popped_out) return options;
+            float left = options.workspace.position.x;
+            float right = left + options.workspace.size.x;
+            for (const auto& edge : dock_panes)
+            {
+                if (!edge.visible || edge.popped_out || edge.id == pane.id) continue;
+                const auto layout = gui::make_dock_pane_layout(edge, options, {});
+                if (edge.slot == gui::DockSlot::left)
+                    left = (std::max)(left, layout.frame.position.x + layout.frame.size.x);
+                else if (edge.slot == gui::DockSlot::right)
+                    right = (std::min)(right, layout.frame.position.x);
+            }
+            options.workspace.position.x = left;
+            options.workspace.size.x = (std::max)(1.0f, right - left);
+            return options;
+        }
+
         void update_display_mode(const input::InputFrame& frame) noexcept
         {
             const auto options = window_mode_options();
@@ -1030,13 +1050,17 @@ void main()
             };
             if (frame.pointer(input::PointerButton::left).released)
             {
-                for (const gui::DockPaneState& pane : dock_panes)
+                bool chosen = false;
+                for (const bool popped_out : {true, false})
+                for (std::size_t index = dock_panes.size(); index-- > 0;)
                 {
-                    const gui::DockPaneLayout layout = gui::make_dock_pane_layout(pane, options, dock_input);
+                    const auto& pane = dock_panes[index];
+                    if (chosen || pane.popped_out != popped_out) continue;
+                    const auto layout = gui::make_dock_pane_layout(pane, pane_options(pane), dock_input);
                     if (gui::contains(layout.title_bar, frame.pointer_position))
                     {
                         dock_input.toggle_popout_pane_id = pane.id;
-                        break;
+                        chosen = true;
                     }
                 }
             }
@@ -1659,7 +1683,6 @@ void main()
                     display_mode == index ? text_primary : text_secondary);
             }
 
-            const auto dock_options = window_dock_options();
             const gui::DockLayoutInput dock_input{ .mouse_position = frame.pointer_position };
             constexpr std::array<std::string_view, 3> pane_names{ "TREE", "VIEWPORT", "INSPECTOR" };
             draw_text(batch, 246.0f, 400.0f, "CLICK DOCK PANE TITLE TO POPOUT OR REDOCK", 1.15f, text_muted);
@@ -1667,7 +1690,7 @@ void main()
             for (std::size_t index = 0; index < dock_panes.size(); ++index)
             {
                 if (dock_panes[index].popped_out != popped_out) continue;
-                const gui::DockPaneLayout pane = gui::make_dock_pane_layout(dock_panes[index], dock_options, dock_input);
+                const gui::DockPaneLayout pane = gui::make_dock_pane_layout(dock_panes[index], pane_options(dock_panes[index]), dock_input);
                 if (!pane.visible)
                     continue;
                 draw_surface(batch, pane.frame, true, 8.0f, pane.active ? control_selected : panel_fill, pane.active ? accent : panel_border, 1.0f);
