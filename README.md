@@ -2,6 +2,12 @@
 
 An interactive C++23 example of [EpochGui](https://github.com/Autodidac/EpochGui), with optional Platform, Audio and Media examples.
 
+Current source candidate is **0.7.1**, prepared locally and unpublished. This patch
+pins the reviewed Gui 0.90.2 input/menu/floating-window repairs and Platform 0.2.2
+pacing/attachment repairs. Audio and Media retain their published revisions.
+GUI-only/native and full/Platform builds have separate CPU checks; native drawing,
+input and exact-package acceptance remain open for this candidate.
+
 ## Try the controls
 
 The main **Widgets** workspace keeps the examples together in one scrollable view. Click a heading to fold a section, or use the links on the left to jump to it.
