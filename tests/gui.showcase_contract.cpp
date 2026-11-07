@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Runs the actual renderer/controller using a recording GL transport, not a native window.
 #include "epochgui_demo/app_bridge.hpp"
-#include "gui/dock_layout.hpp"
 #include <cstddef>
 #include <algorithm>
 #include <array>
@@ -10,6 +9,8 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+
+import epoch.gui;
 
 namespace
 {
