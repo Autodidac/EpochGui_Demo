@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(EpochGuiDemo VERSION 0.7.0 LANGUAGES CXX)
+project(EpochGuiDemo VERSION 0.7.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -211,6 +211,7 @@ target_link_libraries(epoch_gui_demo_renderer PUBLIC epoch_gui_demo_models)
 
 if(BUILD_TESTING)
     add_executable(epoch_gui_demo_showcase_contract tests/gui.showcase_contract.cpp)
+    set_target_properties(epoch_gui_demo_showcase_contract PROPERTIES CXX_SCAN_FOR_MODULES ON)
     target_link_libraries(epoch_gui_demo_showcase_contract PRIVATE epoch_gui_demo_renderer)
     add_test(NAME EpochGuiDemo.Showcase COMMAND epoch_gui_demo_showcase_contract)
     set_tests_properties(EpochGuiDemo.Showcase PROPERTIES TIMEOUT 30)

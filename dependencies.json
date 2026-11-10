@@ -1,11 +1,11 @@
 {
   "schema": "epoch.source_distribution.v1",
   "source_revisions": {
-    "Gui": "7d5d5514a1443c0ef340a626fa163569858ca362",
-    "Platform": "7190bf71ef3e8ecde4113efcda5804ce41fc023d",
+    "Gui": "fd926cb7494df456eaf14a24d68d621030f09bb9",
+    "Platform": "575810b1884f6b906e7652b93dc3f9b68b2d1230",
     "Audio": "980ebd3304f7e5cfc97e48c1e093ea1fc2107760",
     "Media": "47ae75acf1e2ff04af9852f7c80a28d26ef145f0"
   },
   "release_ready": false,
-  "note": "Exact reviewed public dependency sources for 0.7.0. New source/archive/native acceptance is pending; no earlier binary acceptance is reused."
+  "note": "Exact local unpublished Gui 0.90.2 and Platform 0.2.2 candidate commits for Demo 0.7.1; Audio and Media retain published revisions. Source/archive/native acceptance and public availability of these new commits remain separate gates."
 }
