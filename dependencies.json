@@ -1,11 +1,11 @@
 {
   "schema": "epoch.source_distribution.v1",
   "source_revisions": {
-    "Gui": "7d5d5514a1443c0ef340a626fa163569858ca362",
+    "Gui": "7761f146b55fa4f78d15c53db5c33385f80f58f9",
     "Platform": "7190bf71ef3e8ecde4113efcda5804ce41fc023d",
-    "Audio": "980ebd3304f7e5cfc97e48c1e093ea1fc2107760",
-    "Media": "47ae75acf1e2ff04af9852f7c80a28d26ef145f0"
+    "Audio": "1f94bdb8728ea428308c00db6f8c681ce99c04cf",
+    "Media": "2e1892b52cd412ee73c9cacfa8d2288b634f3485"
   },
   "release_ready": false,
-  "note": "Exact reviewed public dependency sources for 0.7.0. New source/archive/native acceptance is pending; no earlier binary acceptance is reused."
+  "note": "Public source dependencies for the atlas playback example. Native interaction acceptance and binary releases are separate."
 }
