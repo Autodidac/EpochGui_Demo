@@ -3,6 +3,7 @@ module;
 #include <compare>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -467,6 +468,71 @@ namespace epochengine::gui_demo
             }
         }
 
+#if EPOCH_DEMO_MEDIA
+        namespace media_preview = epochengine::media::timeline_preview;
+#if defined(_WIN32) && !EPOCHGUI_DEMO_PLATFORM_HOSTED
+        constexpr bool native_atlas_playback = true;
+#else
+        constexpr bool native_atlas_playback = false;
+#endif
+
+        constexpr std::array<gui::Rect, 4> atlas_controls{{
+            {{246.0f, 345.0f}, {116.0f, 38.0f}},
+            {{372.0f, 345.0f}, {116.0f, 38.0f}},
+            {{498.0f, 345.0f}, {116.0f, 38.0f}},
+            {{246.0f, 401.0f}, {368.0f, 25.0f}}
+        }};
+
+        [[nodiscard]] image::Image make_media_atlas()
+        {
+            constexpr auto width = LibraryModels::frame_width;
+            constexpr auto height = LibraryModels::frame_height;
+            image::Image image{
+                .width = width * LibraryModels::atlas.columns,
+                .height = height * LibraryModels::atlas.rows};
+            image.pixels.resize(image.width * image.height);
+            for (std::uint32_t y = 0; y < image.height; ++y)
+            {
+                for (std::uint32_t x = 0; x < image.width; ++x)
+                {
+                    const auto frame = y / height * LibraryModels::atlas.columns + x / width;
+                    const auto px = x % width;
+                    const auto py = y % height;
+                    const auto peak = (px + frame / 2u) % 11u;
+                    const auto horizon = 4u + (peak > 5u ? 10u - peak : peak) / 2u;
+                    image::Rgba8 color{17, 35, static_cast<std::uint8_t>(79u + py * 10u)};
+                    if (py >= horizon)
+                        color = py >= 7u ? image::Rgba8{35, 106, 111} : image::Rgba8{43, 69, 86};
+                    if (px == (frame * 2u + 5u) % width && py == 2u)
+                        color = {255, 200, 104};
+                    image.pixels[y * image.width + x] = color;
+                }
+            }
+            return image;
+        }
+
+        void draw_media_frame(SceneBatch& batch, const image::Image& atlas,
+            const media_preview::AtlasFrame& frame, const media_preview::Rect& target)
+        {
+            const auto pixel_width = static_cast<float>(target.width / frame.width);
+            const auto pixel_height = static_cast<float>(target.height / frame.height);
+            const auto left = static_cast<float>(target.x);
+            const auto top = static_cast<float>(target.y);
+            for (std::uint32_t y = 0; y < frame.height; ++y)
+            {
+                for (std::uint32_t x = 0; x < frame.width; ++x)
+                {
+                    if (const auto* pixel = atlas.pixel(static_cast<std::uint32_t>(frame.x + x),
+                        static_cast<std::uint32_t>(frame.y + y)))
+                    {
+                        batch.append_rect({{left + x * pixel_width, top + y * pixel_height},
+                            {pixel_width, pixel_height}}, color_from_rgba8(*pixel));
+                    }
+                }
+            }
+        }
+#endif
+
         [[nodiscard]] GLuint compile_shader(OpenGLFunctions& gl, GLenum type, const char* source) noexcept
         {
             const GLuint shader = gl.create_shader(type);
@@ -642,6 +708,11 @@ void main()
     struct OpenGLRenderer::Impl : GpuSurface
     {
         LibraryModels libraries{};
+#if EPOCH_DEMO_MEDIA
+        const image::Image media_atlas = make_media_atlas();
+        std::chrono::steady_clock::time_point atlas_frame_time{};
+        std::optional<std::size_t> atlas_press{};
+#endif
         SceneBatch batch{};
         std::array<GpuSurface, 4> external_surfaces{};
         std::array<bool, 4> external_attached{};
@@ -848,6 +919,9 @@ void main()
             navigation_press = -1;
             frame_toggle_press = false;
             chrome_press = input::WindowChromeRegion::outside;
+#if EPOCH_DEMO_MEDIA
+            atlas_press.reset();
+#endif
             for (auto* state : {&core_window, &rounded_window, &dockable_state.floating, &panel_host_state.floating})
                 state->dragging = state->resizing = state->close_pressed = false;
         }
@@ -1609,6 +1683,35 @@ void main()
             case 4: break;
             case 5:
             {
+#if EPOCH_DEMO_MEDIA
+                const auto& left = frame.pointer(input::PointerButton::left);
+                if (left.pressed)
+                {
+                    atlas_press.reset();
+                    for (std::size_t index = 0; index < atlas_controls.size(); ++index)
+                        if (gui::contains(atlas_controls[index], frame.pointer_position)) atlas_press = index;
+                }
+                if (left.released && atlas_press)
+                {
+                    const auto index = *atlas_press;
+                    const auto& control = atlas_controls[index];
+                    if (gui::contains(control, frame.pointer_position))
+                    {
+                        switch (index)
+                        {
+                        case 0:
+                            if (native_atlas_playback) (void)libraries.toggle_playback();
+                            else (void)media_preview::stop(libraries.timeline);
+                            atlas_frame_time = {};
+                            break;
+                        case 1: (void)libraries.step(); break;
+                        case 2: (void)media_preview::set_loop(libraries.timeline, !libraries.timeline.loop); break;
+                        case 3: (void)libraries.seek_fraction((frame.pointer_position.x - control.position.x) / control.size.x); break;
+                        }
+                    }
+                    atlas_press.reset();
+                }
+#else
                 const bool hover = gui::contains({{246.0f, 350.0f}, {220.0f, 36.0f}}, frame.pointer_position);
                 const auto& left = frame.pointer(input::PointerButton::left);
                 if (left.pressed) library_step_press = hover;
@@ -1617,6 +1720,7 @@ void main()
                     if (library_step_press && hover) (void)libraries.step();
                     library_step_press = false;
                 }
+#endif
                 break;
             }
             default: page = 0; break;
@@ -2168,9 +2272,37 @@ void main()
             draw_text(batch, 246.0f, 180.0f, "GUI WITH EXISTING NATIVE DEMO HOST", 1.3f, text_secondary);
 #endif
 #if EPOCH_DEMO_MEDIA
-            draw_text(batch, 246.0f, 286.0f, "MEDIA: GENERATED 1920 X 1080 / 30 FPS METADATA", 1.3f, text_primary);
-            draw_text(batch, 246.0f, 314.0f, "NO DECODED VIDEO - TRANSPORT AND FIT GEOMETRY ONLY", 1.15f, text_muted);
-#endif
+            draw_text(batch, 246.0f, 282.0f, "FRAME ATLAS", 1.55f, text_primary);
+            draw_text(batch, 246.0f, 312.0f, "20 SAMPLE FRAMES / 2 FPS", 1.15f, text_muted);
+            const std::array<std::string_view, 3> labels{
+                native_atlas_playback ? libraries.playing() ? "PAUSE" : "PLAY" : "RESET", "STEP",
+                libraries.timeline.loop ? "LOOP ON" : "LOOP OFF"};
+            for (std::size_t index = 0; index < labels.size(); ++index)
+            {
+                const auto& control = atlas_controls[index];
+                const bool hover = gui::contains(control, frame.pointer_position);
+                draw_surface(batch, control, true, 7.0f,
+                    index == 0 ? accent_soft : hover ? control_hover : control_fill,
+                    panel_border, 1.0f);
+                draw_text(batch, control.position.x + 12.0f, control.position.y + 12.0f,
+                    labels[index], 1.25f, text_primary);
+            }
+            const auto progress = libraries.progress(atlas_controls[3]);
+            batch.append_rect(progress.track, control_fill);
+            batch.append_rect(progress.fill, accent);
+
+            if (const auto sample = libraries.active_frame(); sample && libraries.timeline.source)
+            {
+                draw_text(batch, 246.0f, 445.0f,
+                    "FRAME " + std::to_string(sample->index + 1) + " / 20", 1.2f, text_secondary);
+                draw_surface(batch, {{664.0f, 247.0f}, {537.0f, 310.0f}}, true,
+                    10.0f, background, panel_border, 1.0f);
+                const auto fit = media_preview::contain_fit(*libraries.timeline.source,
+                    {674.0, 257.0, 517.0, 290.0});
+                if (fit) draw_media_frame(batch, media_atlas, *sample, *fit);
+                draw_text(batch, 674.0f, 575.0f, "GENERATED ATLAS PREVIEW", 1.1f, text_muted);
+            }
+#else
             const gui::Rect step{{246.0f, 350.0f}, {220.0f, 36.0f}};
             const bool hover = gui::contains(step, frame.pointer_position);
             draw_surface(batch, step, true, 7.0f, hover ? control_hover : control_fill, panel_border, 1.0f);
@@ -2178,15 +2310,6 @@ void main()
             const auto progress = libraries.progress({{246.0f, 402.0f}, {600.0f, 16.0f}});
             batch.append_rect(progress.track, control_fill);
             batch.append_rect(progress.fill, accent);
-#if EPOCH_DEMO_MEDIA
-            draw_text(batch, 246.0f, 438.0f, "PLAYHEAD: " + std::to_string(libraries.timeline.playhead_seconds), 1.2f, text_secondary);
-            if (libraries.timeline.source)
-            {
-                const auto fit = media::timeline_preview::contain_fit(*libraries.timeline.source, {900.0, 286.0, 300.0, 180.0});
-                if (fit) batch.append_rect({{static_cast<float>(fit->x), static_cast<float>(fit->y)},
-                    {static_cast<float>(fit->width), static_cast<float>(fit->height)}}, panel_border);
-                draw_text(batch, 910.0f, 480.0f, "ASPECT FIT GEOMETRY", 1.1f, text_muted);
-            }
 #endif
 #if EPOCH_DEMO_AUDIO
             draw_text(batch, 246.0f, 510.0f, "AUDIO: GENERATED PCM MIX - NO OUTPUT DEVICE", 1.3f, text_primary);
@@ -2237,6 +2360,20 @@ void main()
 
         void build_scene()
         {
+#if EPOCH_DEMO_MEDIA
+            if (page == 5 && libraries.playing())
+            {
+                const auto now = std::chrono::steady_clock::now();
+                if (atlas_frame_time.time_since_epoch().count() != 0)
+                    (void)media_preview::advance(libraries.timeline,
+                        std::chrono::duration<double>(now - atlas_frame_time).count());
+                atlas_frame_time = now;
+            }
+            else
+            {
+                atlas_frame_time = {};
+            }
+#endif
             batch.clear();
             batch.pixel_origin = {};
             batch.pixel_scale = {static_cast<float>(framebuffer_width) / canvas_width,
@@ -2509,6 +2646,15 @@ void main()
     {
         if (impl_)
             impl_->render();
+    }
+
+    bool OpenGLRenderer::needs_animation_frame() const noexcept
+    {
+#if EPOCH_DEMO_MEDIA
+        return native_atlas_playback && impl_ && impl_->page == 5 && impl_->libraries.playing();
+#else
+        return false;
+#endif
     }
 
     WindowChromeRegion OpenGLRenderer::window_chrome_hit_test(float x, float y) const noexcept

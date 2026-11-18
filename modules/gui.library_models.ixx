@@ -2,6 +2,7 @@
 module;
 #include <compare>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,6 +26,9 @@ export namespace epochengine::gui_demo
     public:
 #if EPOCH_DEMO_MEDIA
         media::timeline_preview::PreviewState timeline{};
+        static constexpr media::timeline_preview::AtlasLayout atlas{5, 4};
+        static constexpr std::uint32_t frame_width = 16;
+        static constexpr std::uint32_t frame_height = 9;
 #endif
 #if EPOCH_DEMO_AUDIO
         audio::AudioManager manager{};
@@ -43,14 +47,13 @@ export namespace epochengine::gui_demo
 #if EPOCH_DEMO_MEDIA
             namespace media = epochengine::media::timeline_preview;
             media::SourceDescriptor source{
-                .logical_path = "demo/generated_timeline",
+                .logical_path = "demo/generated_atlas",
                 .content_sha256 = std::string(64, '0'),
-                .provider_revision = "generated-metadata-demo-v1",
-                .source_width = 1920, .source_height = 1080,
-                .frame_count = 300, .frame_rate = {30, 1}, .duration_seconds = 10.0};
+                .provider_revision = "generated-atlas-demo-v1",
+                .source_width = frame_width, .source_height = frame_height,
+                .frame_count = 20, .frame_rate = {2, 1}, .duration_seconds = 10.0};
             if (!media::admit(timeline, source, {1, 1})) return;
-            timeline.loop = true;
-            if (!media::play(timeline)) return;
+            if (!media::set_loop(timeline, true)) return;
 #endif
 #if EPOCH_DEMO_AUDIO
             const audio::ClipId clip{71, 1};
@@ -82,11 +85,40 @@ export namespace epochengine::gui_demo
             if (!mixed) { ready = false; return false; }
 #endif
 #if EPOCH_DEMO_MEDIA
-            return media::timeline_preview::advance(timeline, 0.5);
+            namespace media = epochengine::media::timeline_preview;
+            const auto current = media::current_frame_index(timeline);
+            if (!current) return false;
+            auto next = *current + 1;
+            if (timeline.loop && next == timeline.source->frame_count) next = 0;
+            return media::seek(timeline, static_cast<double>(next) / timeline.source->frame_rate.value());
 #else
             return true;
 #endif
         }
+
+#if EPOCH_DEMO_MEDIA
+        [[nodiscard]] bool playing() const noexcept
+        {
+            return timeline.transport == media::timeline_preview::TransportMode::playing;
+        }
+
+        bool toggle_playback() noexcept
+        {
+            return playing() ? media::timeline_preview::pause(timeline)
+                             : media::timeline_preview::play(timeline);
+        }
+
+        bool seek_fraction(double fraction) noexcept
+        {
+            return timeline.source && media::timeline_preview::seek(timeline,
+                fraction * timeline.source->duration_seconds);
+        }
+
+        [[nodiscard]] std::optional<media::timeline_preview::AtlasFrame> active_frame() const noexcept
+        {
+            return media::timeline_preview::current_atlas_frame(timeline, atlas);
+        }
+#endif
 
         [[nodiscard]] gui_lib::ProgressBarLayout progress(gui_lib::Rect track) const
         {

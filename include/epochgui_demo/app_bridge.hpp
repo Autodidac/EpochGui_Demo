@@ -160,6 +160,7 @@ extern "C"
         epoch_gui_demo_renderer* renderer);
 
     void epoch_gui_demo_render(epoch_gui_demo_renderer* renderer);
+    [[nodiscard]] bool epoch_gui_demo_needs_animation_frame(const epoch_gui_demo_renderer* renderer);
 
 #ifdef __cplusplus
 }

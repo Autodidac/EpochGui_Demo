@@ -229,3 +229,8 @@ void epoch_gui_demo_render(epoch_gui_demo_renderer* renderer)
     if (renderer)
         renderer->renderer.render();
 }
+
+bool epoch_gui_demo_needs_animation_frame(const epoch_gui_demo_renderer* renderer)
+{
+    return renderer && renderer->renderer.needs_animation_frame();
+}

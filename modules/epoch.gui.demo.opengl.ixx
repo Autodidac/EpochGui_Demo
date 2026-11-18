@@ -120,6 +120,7 @@ export namespace epochengine::gui_demo
         [[nodiscard]] std::string edit_command(int command, std::string_view pasted_text = {});
         void set_clipboard(const char* (*reader)(void*), bool (*writer)(void*, const char*), void* user) noexcept;
         void render() noexcept;
+        [[nodiscard]] bool needs_animation_frame() const noexcept;
 
         [[nodiscard]] WindowChromeRegion window_chrome_hit_test(float x, float y) const noexcept;
         [[nodiscard]] WindowCommand take_window_command() noexcept;

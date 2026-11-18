@@ -135,6 +135,7 @@ namespace
             if (graphics_shutdown_)
                 return;
             graphics_shutdown_ = true;
+            update_animation_timer(false);
 
             if (render_context_ && device_context_)
                 wglMakeCurrent(device_context_, render_context_);
@@ -298,6 +299,7 @@ namespace
             const int window_command = epoch_gui_demo_take_window_command(renderer_);
             const int frame_mode = epoch_gui_demo_take_native_frame_mode(renderer_);
             rendering_ = false;
+            update_animation_timer(!IsIconic(window_) && epoch_gui_demo_needs_animation_frame(renderer_));
 
             switch (window_command)
             {
@@ -318,6 +320,17 @@ namespace
                 request_native_frame_mode(true);
             else if (frame_mode == EPOCH_GUI_DEMO_FRAME_MODE_BORDERLESS)
                 request_native_frame_mode(false);
+        }
+
+        void update_animation_timer(bool active)
+        {
+            if (active && !animation_timer_active_)
+                animation_timer_active_ = SetTimer(window_, atlas_timer_id, 500, nullptr) != 0;
+            else if (!active && animation_timer_active_)
+            {
+                KillTimer(window_, atlas_timer_id);
+                animation_timer_active_ = false;
+            }
         }
 
         void feed_pointer_position(LPARAM lparam)
@@ -376,6 +389,14 @@ namespace
                 render_message_pending_ = false;
                 render_and_apply_commands();
                 return 0;
+
+            case WM_TIMER:
+                if (wparam == atlas_timer_id)
+                {
+                    if (animation_timer_active_ && !IsIconic(window_)) request_render();
+                    return 0;
+                }
+                break;
 
             case apply_native_frame_message:
                 frame_change_message_pending_ = false;
@@ -437,6 +458,7 @@ namespace
             }
 
             case WM_SIZE:
+                if (wparam == SIZE_MINIMIZED) update_animation_timer(false);
                 if (renderer_)
                 {
                     epoch_gui_demo_resize(
@@ -581,6 +603,8 @@ namespace
         bool frame_change_message_pending_{};
         bool frame_change_in_progress_{};
         bool render_message_pending_{};
+        static constexpr UINT_PTR atlas_timer_id = 1;
+        bool animation_timer_active_{};
         bool rendering_{};
         unsigned held_buttons_{};
         bool graphics_shutdown_{};

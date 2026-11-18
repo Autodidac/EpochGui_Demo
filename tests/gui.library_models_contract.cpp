@@ -29,5 +29,14 @@ int main()
 #if EPOCH_DEMO_AUDIO
     if (model.mixer.metrics().frames_produced != 80000) return 9;
 #endif
+#if EPOCH_DEMO_MEDIA
+    if (model.playing() || !model.toggle_playback() || !model.playing()
+        || !model.toggle_playback() || model.playing() || !model.seek_fraction(0.3)) return 10;
+    const auto selected = model.active_frame();
+    if (!selected || selected->index != 6 || selected->x != model.frame_width
+        || selected->y != model.frame_height) return 11;
+    if (!model.seek_fraction(1.0) || !model.active_frame() || model.active_frame()->index != 19
+        || !model.step() || !model.active_frame() || model.active_frame()->index != 0) return 12;
+#endif
     return 0;
 }

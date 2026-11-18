@@ -13,7 +13,11 @@ The main **Widgets** workspace keeps the examples together in one scrollable vie
 
 **Windows / Docks** contains draggable, resizable windows and working close, reopen, dock, float and detach controls. Right-click opens the relevant menu. The menu and window contents stay inside their bounds.
 
-**Libraries** shows the libraries compiled into this build. Its step button advances the Media playhead and generates Audio PCM when those libraries are included. Media shows metadata and layout; it does not decode video. Audio mixes samples in memory; it does not open a sound device.
+**Libraries** shows the libraries compiled into this build. The Media frame
+atlas previews 20 generated frames. Use **Step**, click the seek bar, or
+toggle **Loop**. The native Windows host also has **Play** and **Pause**.
+The atlas sample uses generated pixel frames. Movie files require a separate
+decoder. The Audio step mixes PCM in memory without a sound device.
 
 On Windows, Ctrl + A / C / X / V / Z / Y works with the system clipboard in both native hosts. Copying must succeed before a cut removes text. The edit buttons and text context menu use the same path. Other hosts retain the demo's local copy/paste buffer.
 
