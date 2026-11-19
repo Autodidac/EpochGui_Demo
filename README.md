@@ -2,6 +2,8 @@
 
 An interactive C++23 example of [EpochGui](https://github.com/Autodidac/EpochGui), with optional Platform, Audio and Media examples.
 
+![EpochGui Demo Widgets workspace on Windows](Images/readme/epochgui-widgets.png)
+
 ## Try the controls
 
 The main **Widgets** workspace keeps the examples together in one scrollable view. Click a heading to fold a section, or use the links on the left to jump to it.
